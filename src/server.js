@@ -8,6 +8,8 @@ import { breakevenMove } from './engine/paper.js';
 import { RANDOM_STRATEGY } from './engine/signal-loader.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
+/** Changes on every start, so updated page files load fresh after a restart. */
+const BOOT_ID = Date.now().toString(36);
 const TYPES = /** @type {Record<string, string>} */ ({
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -241,6 +243,9 @@ export function createServer({ store, config, signals, strategies, provider, app
       if (!file.startsWith(PUBLIC_DIR + path.sep)) return send(res, 403, 'text/plain', 'Forbidden');
       try {
         const data = await readFile(file);
+        // Every response is already no-store; the version tag on the page's own files is a second guard so a
+        // browser that keeps an old copy anyway (an old tab, back/forward cache) still gets the new files.
+        if (rel === 'index.html') return send(res, 200, TYPES['.html'], String(data).replace(/(\/(?:style\.css|app\.js))"/g, `$1?v=${BOOT_ID}"`));
         return send(res, 200, TYPES[path.extname(file)] ?? 'application/octet-stream', data);
       } catch {
         return send(res, 404, 'text/plain', 'Not found');

@@ -948,6 +948,11 @@ async function quit() {
   document.body.innerHTML = `<div class="goodbye"><div class="brand">PAPER LAB</div><p>Paper Lab is off. Nothing is running.</p><p class="muted">Double-click the Paper Lab icon on your desktop to start it again. You can close this tab.</p></div>`;
 }
 
+// A page restored from the browser's back/forward memory may be an older version: load it fresh.
+window.addEventListener('pageshow', (e) => {
+  if (e.persisted) location.reload();
+});
+
 const events = new EventSource('/api/events');
 events.addEventListener('cycle', () => void refresh());
 events.addEventListener('state', () => void refresh());
