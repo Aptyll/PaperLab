@@ -156,6 +156,6 @@ for (const [name, body] of files) {
 }
 const manifest = { session: sessionN, startedAt: info.startedAt, recordedAt, trades: info.trades };
 writeFileSync(path.join(OUT, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
-const names = readdirSync(OUT, { recursive: true }).map(String);
-const bytes = names.reduce((a, n) => a + (statSync(path.join(OUT, n)).isFile() ? statSync(path.join(OUT, n)).size : 0), 0);
+const names = readdirSync(OUT, { recursive: true }).map(String).filter((n) => statSync(path.join(OUT, n)).isFile());
+const bytes = names.reduce((a, n) => a + statSync(path.join(OUT, n)).size, 0);
 console.log(`Saved Session ${sessionN} (${info.trades} trades, ${pools.size} coins) to demo/data/: ${names.length} files, ${(bytes / 1e6).toFixed(1)} MB.`);

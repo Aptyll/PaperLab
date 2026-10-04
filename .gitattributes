@@ -3,3 +3,5 @@
 *.cmd -text
 *.ps1 -text
 *.ico binary
+# The demo data is written on Windows too; keep it byte-identical everywhere.
+demo/data/** -text
