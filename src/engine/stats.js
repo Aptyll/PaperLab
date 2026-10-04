@@ -443,3 +443,112 @@ export function calibration(trades) {
   }
   return { n: scored.length, brier, baselineBrier, buckets };
 }
+
+/**
+ * @typedef {Object} HitRate
+ * @property {number} n        Finished trades with these exact exits.
+ * @property {number} hits     Of those, how many reached take profit.
+ * @property {number|null} rate
+ * @property {[number, number]|null} ci  95% range for the rate.
+ */
+
+/**
+ * @typedef {Object} StrategyOdds
+ * @property {string} strategy
+ * @property {HitRate} hit     The strategy's own trades.
+ * @property {HitRate} random  Its random picker's: what any coin from the same list did.
+ */
+
+/**
+ * How often each strategy's trades reached take profit before the stop loss
+ * or time limit: a measured hit rate, never a guess. Counts every run, but
+ * only trades with the exits the strategy uses now (a different take profit
+ * is a different question), and never trades made on a flagged price.
+ * @param {PaperTrade[]} trades
+ * @param {{id: string, trade: {stopLossPct: number, takeProfitPct: number, timeLimitMin: number}}[]} strategies
+ * @returns {Map<string, StrategyOdds>}
+ */
+export function hitRates(trades, strategies) {
+  /** @type {Map<string, StrategyOdds>} */
+  const out = new Map();
+  const near = (/** @type {number} */ a, /** @type {number} */ b) => Math.abs(a - b) < 1e-9;
+  for (const s of strategies) {
+    const same = (/** @type {PaperTrade} */ t) =>
+      t.status === 'closed' &&
+      !t.dataFlag &&
+      near(t.stopLossPct, s.trade.stopLossPct) &&
+      near(t.takeProfitPct, s.trade.takeProfitPct) &&
+      t.timeLimitMs === s.trade.timeLimitMin * 60_000;
+    const rate = (/** @type {string} */ book) => {
+      const mine = trades.filter((t) => t.book === book && same(t));
+      const hits = mine.filter((t) => t.exitReason === 'take_profit').length;
+      return { n: mine.length, hits, rate: mine.length ? hits / mine.length : null, ci: wilson(hits, mine.length) };
+    };
+    out.set(s.id, { strategy: s.id, hit: rate(s.id), random: rate(`${RANDOM_STRATEGY}:${s.id}`) });
+  }
+  return out;
+}
+
+/**
+ * @typedef {Object} HotCoin
+ * @property {string} poolAddress
+ * @property {string} symbol
+ * @property {string[]} strategies  Strategies whose rule fired on it in the window, strongest odds first.
+ * @property {number} rules         Different rules among them (a fast and a slow version of one rule count once).
+ * @property {number} firstAt       First signal in the window.
+ * @property {number} lastAt        Latest signal.
+ * @property {number} priceAtFirst
+ * @property {number|null} priceNow  Latest trusted price.
+ * @property {number|null} movePct   Since the first signal: how late a buy now would be.
+ * @property {StrategyOdds[]} odds   One per strategy, same order.
+ * @property {boolean} enoughTrades  The best odds rest on at least MIN_TRADES_FOR_VERDICT trades.
+ */
+
+/**
+ * Coins the strategies are buying right now: their rules fired on it in the
+ * last few minutes. Ranked by how many different rules agree, then by the
+ * best measured hit rate's low end (so 2 of 2 doesn't outrank 12 of 30).
+ * @param {Object} a
+ * @param {{signalId: string, poolAddress: string, symbol: string, ts: number, priceUsd: number}[]} a.events  Signal fires in the window.
+ * @param {{id: string, rule: string}[]} a.strategies  Active strategies and their rule.
+ * @param {Map<string, StrategyOdds>} a.odds
+ * @param {(pool: string) => number|null} a.priceNow
+ * @returns {HotCoin[]}
+ */
+export function hotCoins({ events, strategies, odds, priceNow }) {
+  const ruleOf = new Map(strategies.map((s) => [s.id, s.rule]));
+  /** @type {Map<string, typeof events>} */
+  const byPool = new Map();
+  for (const e of events) {
+    if (!ruleOf.has(e.signalId)) continue;
+    const list = byPool.get(e.poolAddress) ?? [];
+    list.push(e);
+    byPool.set(e.poolAddress, list);
+  }
+  const low = (/** @type {StrategyOdds|undefined} */ o) => o?.hit.ci?.[0] ?? 0;
+  /** @type {HotCoin[]} */
+  const coins = [];
+  for (const [pool, list] of byPool) {
+    list.sort((a, b) => a.ts - b.ts);
+    const ids = [...new Set(list.map((e) => e.signalId))].sort((a, b) => low(odds.get(b)) - low(odds.get(a)));
+    const first = list[0];
+    const now = priceNow(pool);
+    const best = odds.get(ids[0]);
+    coins.push({
+      poolAddress: pool,
+      symbol: list[list.length - 1].symbol,
+      strategies: ids,
+      rules: new Set(ids.map((id) => ruleOf.get(id))).size,
+      firstAt: first.ts,
+      lastAt: list[list.length - 1].ts,
+      priceAtFirst: first.priceUsd,
+      priceNow: now,
+      movePct: now !== null && first.priceUsd > 0 ? now / first.priceUsd - 1 : null,
+      odds: ids.map((id) => /** @type {StrategyOdds} */ (odds.get(id))),
+      enoughTrades: (best?.hit.n ?? 0) >= MIN_TRADES_FOR_VERDICT,
+    });
+  }
+  return coins.sort(
+    (a, b) => b.rules - a.rules || low(b.odds[0]) - low(a.odds[0]) || b.lastAt - a.lastAt,
+  );
+}

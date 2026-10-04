@@ -3,7 +3,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ROOT } from './config.js';
-import { strategyResults, calibration, coinResults, priceHistory, GO_LIVE } from './engine/stats.js';
+import { strategyResults, calibration, coinResults, priceHistory, hitRates, hotCoins, GO_LIVE } from './engine/stats.js';
 import { breakevenMove } from './engine/paper.js';
 import { RANDOM_STRATEGY } from './engine/signal-loader.js';
 
@@ -12,6 +12,8 @@ const PUBLIC_DIR = path.join(ROOT, 'public');
 const BOOT_ID = Date.now().toString(36);
 /** Points on each balance-over-time line. The chart samples to its own grid, so more would not show. */
 const CURVE_POINTS = 400;
+/** "Hot now": coins a rule fired on within this long. */
+const HOT_WINDOW_MIN = 15;
 const TYPES = /** @type {Record<string, string>} */ ({
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -184,6 +186,19 @@ export function createServer({ store, config, signals, strategies, provider, app
       const only = q.get('strategies')?.split(',').filter(Boolean);
       const trades = store.trades({ runId: runOf(q) }).filter((t) => !t.dataFlag && (!only || only.includes(t.strategy)));
       return coinResults(trades, latestPrice);
+    }
+    if (pathname === '/api/hot') {
+      // What the strategies are buying right now, with each one's measured hit rate. Current run only.
+      const now = Date.now();
+      const active = strategies.filter((s) => !s.retired);
+      const odds = hitRates(store.trades(), active);
+      const coins = hotCoins({
+        events: store.signalFiresSince(now - HOT_WINDOW_MIN * 60_000, runId),
+        strategies: active.map((s) => ({ id: s.id, rule: s.signal.id })),
+        odds,
+        priceNow: (pool) => store.latestSnapshot(pool)?.priceUsd ?? null,
+      });
+      return { windowMin: HOT_WINDOW_MIN, coins: coins.slice(0, 8), more: Math.max(0, coins.length - 8) };
     }
     if (pathname === '/api/results') {
       const run = runOf(q);

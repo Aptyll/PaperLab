@@ -9,7 +9,7 @@ import { normalizeResponse } from '../src/providers/geckoterminal.js';
 import { buildPendingTrade, fillPending, exitReasonFor, closeTrade, breakevenMove, priceImpact } from '../src/engine/paper.js';
 import { loadSignals } from '../src/engine/signal-loader.js';
 import { runCycle } from '../src/engine/cycle.js';
-import { strategyResults, wilson, calibration, verdict, goLiveChecks, coinResults, priceHistory } from '../src/engine/stats.js';
+import { strategyResults, wilson, calibration, verdict, goLiveChecks, coinResults, priceHistory, hitRates, hotCoins } from '../src/engine/stats.js';
 import { Store } from '../src/db.js';
 import { DEFAULTS } from '../src/config.js';
 import { suspectPrice, checkSavedPrices } from '../src/engine/sanity.js';
@@ -672,4 +672,30 @@ test('a bad price reading does not close a trade, and old trades made on one are
   assert.match(String(flagged.dataFlag), /price 4x/);
   assert.equal(store.cashDelta(flagged.book, deps.runId), 0, 'its made-up profit is not cash');
   store.close();
+});
+
+test('hot now: rules agreeing first, odds from trades with the same exits only', () => {
+  const exits = { stopLossPct: 0.2, takeProfitPct: 0.4, timeLimitMin: 60 };
+  const base = { status: 'closed', stopLossPct: 0.2, takeProfitPct: 0.4, timeLimitMs: 3600_000, dataFlag: null };
+  const trades = /** @type {any[]} */ ([
+    ...Array.from({ length: 12 }, (_, i) => ({ ...base, book: 'falcon', exitReason: i < 6 ? 'take_profit' : 'stop_loss' })),
+    { ...base, book: 'falcon', exitReason: 'take_profit', takeProfitPct: 0.2 }, // other exits: a different question
+    { ...base, book: 'falcon', exitReason: 'take_profit', dataFlag: 'bad price' }, // flagged: never counted
+    ...Array.from({ length: 10 }, (_, i) => ({ ...base, book: 'random:falcon', exitReason: i < 2 ? 'take_profit' : 'time_limit' })),
+    { ...base, book: 'badger', exitReason: 'take_profit' },
+  ]);
+  const odds = hitRates(trades, [{ id: 'falcon', trade: exits }, { id: 'badger', trade: exits }, { id: 'hawk', trade: exits }]);
+  assert.deepEqual([odds.get('falcon')?.hit.hits, odds.get('falcon')?.hit.n, odds.get('falcon')?.random.hits], [6, 12, 2]);
+  const ev = (/** @type {string} */ signalId, /** @type {string} */ pool, /** @type {number} */ ts) => ({ signalId, poolAddress: pool, symbol: pool, ts, priceUsd: 1 });
+  const hot = hotCoins({
+    // A: falcon and hawk share one rule. B: badger alone, 1 of 1. C: two different rules.
+    events: [ev('falcon', 'A', 1), ev('hawk', 'A', 2), ev('badger', 'B', 3), ev('falcon', 'C', 1), ev('badger', 'C', 4)],
+    strategies: [{ id: 'falcon', rule: 'r1' }, { id: 'hawk', rule: 'r1' }, { id: 'badger', rule: 'r2' }],
+    odds,
+    priceNow: () => 1.1,
+  });
+  assert.deepEqual(hot.map((c) => c.poolAddress), ['C', 'A', 'B'], '2 rules first; then 6 of 12 beats 1 of 1');
+  assert.equal(hot[1].rules, 1, 'a fast and a slow version of one rule agree as one');
+  assert.equal(hot[2].enoughTrades, false);
+  assert.ok(Math.abs((hot[0].movePct ?? 0) - 0.1) < 1e-9);
 });

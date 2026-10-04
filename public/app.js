@@ -896,9 +896,11 @@ async function scoreboardPage(view) {
   const res = state.results;
   const rows = shownStrategies(res.strategies);
   const ids = new Set(rows.map((r) => r.strategy));
-  const [trades, coins] = await Promise.all([
+  const [trades, coins, hot] = await Promise.all([
     getJson(forRun('/api/trades?limit=5000')),
     getJson(forRun(`/api/coin-results?strategies=${encodeURIComponent([...ids].join(','))}`)),
+    // "Hot now" is about this moment, so only for the current run.
+    state.viewRun === null ? getJson('/api/hot') : Promise.resolve(null),
   ]);
   const mine = trades.filter((/** @type {any} */ t) => t.strategy !== 'random' && ids.has(t.strategy));
   const openCount = mine.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending').length;
@@ -915,7 +917,7 @@ async function scoreboardPage(view) {
           <div class="chart" id="balance"></div>
           ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
         </div>
-        ${coinSide(coins)}
+        ${coinSide(coins, hot, offNow)}
       </div>
     </div>
     ${panel('trades', `Trades <span class="count">${openCount ? `${openCount} open` : ''}</span>`, tradesList(mine), false)}
@@ -950,12 +952,66 @@ function coinNamer(coins) {
     `<b title="${esc(c.poolAddress)}">${esc(c.symbol)}</b>${seen.get(c.symbol.toLowerCase()) > 1 ? ` <span class="muted mono addr">…${esc(c.poolAddress.slice(-4))}</span>` : ''}`;
 }
 
+/** Below this many finished trades a hit rate says too little to show (MIN_TRADES_FOR_VERDICT in stats.js). */
+const MIN_TRADES = 10;
+
+/** How a strategy's measured odds read in one line. @param {any} o */
+function oddsLine(o) {
+  const tp = strategyOf(o.strategy)?.trade?.takeProfitPct;
+  const h = o.hit;
+  if (h.n < MIN_TRADES) return `<span class="muted">${esc(nameOf(o.strategy))}: too few trades to tell (${h.n})</span>`;
+  return `${esc(nameOf(o.strategy))} hits ${tp ? `+${p100(tp)}` : 'take profit'}: <b>${share(h.rate)}</b> <span class="muted">of ${h.n}${o.random.n ? ` · random ${share(o.random.rate)}` : ''}</span>`;
+}
+
+/** The full story of one strategy's odds, for the hover text. @param {any} o */
+function oddsDetail(o) {
+  const t = strategyOf(o.strategy)?.trade;
+  const h = o.hit;
+  const r = o.random;
+  const exits = t ? `reached +${p100(t.takeProfitPct)} before −${p100(t.stopLossPct)} or ${t.timeLimitMin} min` : 'reached take profit';
+  const range = h.ci ? `, likely between ${share(h.ci[0])} and ${share(h.ci[1])}` : '';
+  return `${nameOf(o.strategy)}: its buys ${exits} in ${h.hits} of ${h.n} finished trades${h.n ? ` (${share(h.rate)}${range})` : ''}. Its random picker: ${r.hits} of ${r.n}${r.n ? ` (${share(r.rate)})` : ''}.`;
+}
+
+/**
+ * Coins the strategies are buying right now, with the measured odds of the
+ * best strategy behind each: what a person checks before deciding by hand.
+ * @param {{windowMin: number, coins: any[], more: number}} hot
+ * @param {boolean} offNow
+ */
+function hotSection(hot, offNow) {
+  const name = coinNamer(hot.coins);
+  const rows = hot.coins
+    .slice(0, 5)
+    .map((c) => {
+      const tip = [
+        `${c.symbol}: ${c.rules > 1 ? `${c.rules} different rules agree` : 'one rule'} (${c.strategies.map(nameOf).join(', ')}).`,
+        `First signal ${ago(c.firstAt)} ago at ${price(c.priceAtFirst)}${c.priceNow !== null ? `, now ${price(c.priceNow)} (${pct(c.movePct)})` : ''}.`,
+        '',
+        ...c.odds.map(oddsDetail),
+        '',
+        'Measured from past paper trades, not a promise. Check the chart before buying.',
+      ].join('\n');
+      return `<a class="hot-row" href="#/coin/${encodeURIComponent(c.poolAddress)}" title="${esc(tip)}">
+        <span class="hot-top">${name(c)}<span class="holders">${c.strategies.map((/** @type {string} */ id) => dot(id)).join('')}</span>${c.rules > 1 ? `<span class="hot-agree">${c.rules} rules</span>` : ''}<span class="hot-ago">${ago(c.firstAt)}</span><b class="hot-move ${tone(c.movePct)}">${c.movePct === null ? '' : pct(c.movePct, 0)}</b></span>
+        <span class="hot-odds">${oddsLine(c.odds[0])}</span>
+      </a>`;
+    })
+    .join('');
+  const empty = offNow ? 'Live data is off.' : `Nothing signaled in the last ${hot.windowMin} min.`;
+  const more = hot.coins.length - 5 + hot.more;
+  return `<section class="hot">
+    <div class="side-head"><span>Hot now</span><span class="side-sub" title="Coins a strategy's rule fired on in the last ${hot.windowMin} minutes, most rules agreeing first, then the best measured odds. Odds are how often that strategy's past trades reached take profit.">last ${hot.windowMin} min</span></div>
+    ${rows || `<div class="empty">${empty}</div>`}${more > 0 ? `<div class="hot-more muted">${more} more firing</div>` : ''}
+  </section>`;
+}
+
 /**
  * Best coins beside the chart: what the strategies are buying and how it's
  * going, best first. Dots show which strategies bought it; the rest is on the Coins page.
  * @param {any[]} coins
  */
-function coinSide(coins) {
+function coinSide(coins, /** @type {any} */ hot = null, offNow = false) {
   const name = coinNamer(coins);
   const rows = coins
     .slice(0, 30)
@@ -969,6 +1025,7 @@ function coinSide(coins) {
     )
     .join('');
   return `<aside class="coin-side">
+    ${hot ? hotSection(hot, offNow) : ''}
     <div class="side-head"><span>Best coins</span><a href="#/coins">All ${coins.length} →</a></div>
     <div class="side-list">${rows || '<div class="empty">No coins bought yet.</div>'}</div>
   </aside>`;
@@ -1258,6 +1315,7 @@ function guidePage(view) {
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>
     <p><b>Buys and sells.</b> The chart marks the latest buys (hollow ring) and sells (solid dot) on each strategy's line, with a faint dotted line from each sell back to its buy, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
+    <p><b>Hot now.</b> Top right: coins a strategy's rule fired on in the last 15 minutes, the ones the strategies are buying right now. Coins where more different rules agree come first (a fast and a slow version of one rule count once), then the best odds. The odds are measured, not guessed: how often that strategy's past paper trades reached its take profit before its stop loss or time limit, out of how many trades, next to its random picker's rate for comparison. Under 10 trades it says so instead of showing a rate. The percent on the right is how far the price has moved since the first signal, so you can see if you'd be late. Hover a coin for every strategy's numbers. It's there to point you at coins worth a look; you decide.</p>
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
     <p id="bad-prices"><b>Bad prices.</b> Now and then the price source returns a reading that can't be right, like a coin jumping 4x in a minute while its pool's liquidity doesn't move. Every reading is checked: when the price moves 2x or more, the pool's liquidity and the coin's FDV have to move with it, the way they do when people really trade. A reading that fails is kept but held back: nothing buys, sells or values a trade on it, and the coin's price chart leaves it out. Trades made on such a reading before this check existed are crossed out and left out of the results, with a note under the strip. Nothing is deleted.</p>

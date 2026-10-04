@@ -849,6 +849,22 @@ export class Store {
       .map((r) => /** @type {SignalEvent} */ (fromRow(EVENT_COLS, r)));
   }
 
+  /**
+   * Signal fires since a moment in a run, with the price they fired at, oldest first.
+   * @param {number} sinceTs
+   * @param {number} runId
+   * @returns {{signalId: string, poolAddress: string, symbol: string, ts: number, priceUsd: number}[]}
+   */
+  signalFiresSince(sinceTs, runId) {
+    return this.db
+      .prepare(
+        `SELECT e.signal_id, e.pool_address, e.symbol, e.ts, s.price_usd FROM signal_events e JOIN snapshots s ON s.id = e.snapshot_id
+         WHERE e.run_id = ? AND e.ts >= ? ORDER BY e.ts, e.id`,
+      )
+      .all(runId, sinceTs)
+      .map((r) => ({ signalId: String(r.signal_id), poolAddress: String(r.pool_address), symbol: String(r.symbol), ts: Number(r.ts), priceUsd: Number(r.price_usd) }));
+  }
+
   // ---- trades ----
 
   /**
