@@ -749,5 +749,11 @@ test('a trade open while Paper Lab was off is left out; trades after it count', 
   store.insertPoll({ ts: now + 20 * 60_000, ok: true, calls: 1, pools: 1, error: null });
   store.insertTrade({ ...copy, signalAt: now - 30_000, openedAt: now, closedAt: now + 20 * 60_000, pnlUsd: 3 });
   assert.match(String(store.trades({ book, status: 'closed' })[0].dataFlag), /off for 2\d min$/);
+  // A trade held through two off periods names the time off in total; a cancelled order is never flagged.
+  store.insertPoll({ ts: now + 60 * 60_000, ok: true, calls: 1, pools: 1, error: null });
+  const both = store.insertTrade({ ...copy, signalAt: now - 30_000, openedAt: now, closedAt: now + 60 * 60_000, pnlUsd: 1 });
+  assert.match(String(store.trades({ book }).find((t) => t.id === both.id)?.dataFlag), /off for 60 min$/, "20 + 40 minutes off");
+  const gone = store.insertTrade({ ...copy, status: 'cancelled', signalAt: now - 30_000, openedAt: null, closedAt: now + 60 * 60_000, pnlUsd: null });
+  assert.equal(store.trades({ book }).find((t) => t.id === gone.id)?.dataFlag, null);
   store.close();
 });
