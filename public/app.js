@@ -433,6 +433,14 @@ function chartSpan(res) {
  * @property {number} [now]       Balance now with open trades counted as if sold, the same number as the strip.
  */
 
+/** A #rrggbb color at some opacity. @param {string} hex @param {number} alpha */
+function fade(hex, alpha) {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 /** Linear value of a curve at time t. @param {{t: number, v: number}[]} pts @param {number} t */
 function interpolate(pts, t) {
   let lo = 0;
@@ -482,6 +490,18 @@ function balanceChart(el, lines, start, span = {}) {
     const sec = Math.floor((from + i * stepMs) / 1000);
     if (!grid.length || sec > grid[grid.length - 1]) grid.push(sec);
   }
+  /** A line's points from the run start to the end, finishing at its balance now. @param {ChartLine} l */
+  const realPoints = (l) => {
+    const last = l.curve.length ? l.curve[l.curve.length - 1].equity : start;
+    const real = [{ t: from, v: start }, ...l.curve.map((/** @type {any} */ p) => ({ t: p.t, v: p.equity }))];
+    // The last step is open trades as if sold now, so the line ends where the strip's number is.
+    const end = grid[grid.length - 1] * 1000;
+    if (l.now !== undefined && Math.abs(l.now - last) >= 0.005 && end > real[real.length - 1].t) {
+      real.push({ t: Math.max(real[real.length - 1].t, end - stepMs), v: last }, { t: end, v: l.now });
+    }
+    real.push({ t: Math.max(to, end), v: real[real.length - 1].v });
+    return real;
+  };
   const gridIndex = (/** @type {number} */ ms) => Math.max(0, Math.min(grid.length - 1, Math.round((ms - from) / stepMs)));
 
   const fmt = (/** @type {number} */ v) => dollars(v);
@@ -513,24 +533,39 @@ function balanceChart(el, lines, start, span = {}) {
   /** @type {{series: any, line: ChartLine, real: {t: number, v: number}[]}[]} */
   const drawn = [];
   // Random line first, so the strategies draw on top of it.
-  for (const l of [...lines].sort((a, b) => Number(b.dashed) - Number(a.dashed))) {
+  const ordered = [...lines].sort((a, b) => Number(b.dashed) - Number(a.dashed));
+  const sampled = ordered.map((l) => realPoints(l));
+  // Strategies with the same entries (a fast and a slow variant of one rule) can
+  // share a line until their exits differ. The one underneath draws wide and
+  // faint, so the pair shows as one line in a halo instead of one hiding.
+  const halo = new Set();
+  sampled.forEach((pts, i) => {
+    if (ordered[i].dashed) return;
+    for (let j = i + 1; j < ordered.length; j++) {
+      // Only where at least one has moved off the start: every line is flat there before its first trade.
+      let moved = 0;
+      let same = 0;
+      for (const sec of grid) {
+        const a = interpolate(pts, sec * 1000);
+        const b = interpolate(sampled[j], sec * 1000);
+        if (Math.abs(a - start) < 0.5 && Math.abs(b - start) < 0.5) continue;
+        moved++;
+        if (Math.abs(a - b) < 0.5) same++;
+      }
+      if (same >= 2 && same > moved * 0.3) halo.add(i);
+    }
+  });
+  ordered.forEach((l, i) => {
+    const real = sampled[i];
     const series = chart.addSeries(LWC.LineSeries, {
-      color: l.dashed ? css('--chart-random') : l.color,
-      lineWidth: l.dashed ? 1 : 2,
+      color: l.dashed ? css('--chart-random') : halo.has(i) ? fade(l.color, 0.6) : l.color,
+      lineWidth: l.dashed ? 1 : halo.has(i) ? 6 : 2,
       lineStyle: l.dashed ? 2 : 0,
       priceLineVisible: false,
       lastValueVisible: !l.dashed,
       crosshairMarkerVisible: false,
       priceFormat: { type: 'custom', formatter: fmt, minMove: 0.01 },
     });
-    const last = l.curve.length ? l.curve[l.curve.length - 1].equity : start;
-    const real = [{ t: from, v: start }, ...l.curve.map((p) => ({ t: p.t, v: p.equity }))];
-    // The last step is open trades as if sold now, so the line ends where the strip's number is.
-    const end = grid[grid.length - 1] * 1000;
-    if (l.now !== undefined && Math.abs(l.now - last) >= 0.005 && end > real[real.length - 1].t) {
-      real.push({ t: Math.max(real[real.length - 1].t, end - stepMs), v: last }, { t: end, v: l.now });
-    }
-    real.push({ t: Math.max(to, end), v: real[real.length - 1].v });
     series.setData(grid.map((sec) => ({ time: sec, value: interpolate(real, sec * 1000) })));
     const marks = events
       .filter((e) => e.line === l && marked.has(e))
@@ -544,7 +579,7 @@ function balanceChart(el, lines, start, span = {}) {
       .sort((a, b) => a.time - b.time);
     if (marks.length) LWC.createSeriesMarkers(series, marks);
     drawn.push({ series, line: l, real });
-  }
+  });
   // Where every book started: a faint reference line at the bankroll.
   drawn[0].series.createPriceLine({ price: start, color: css('--chart-start'), lineWidth: 1, lineStyle: 1, axisLabelVisible: false, title: '' });
   chart.timeScale().fitContent();
@@ -1054,7 +1089,7 @@ function guidePage(view) {
     <p><b>The strip above the chart.</b> First your portfolio, then each strategy in its chart color, most profit first. A strategy's number is its profit so far, open trades counted as if sold now. Hover one for its rule, balance, how far it is ahead of its random picker, win rate and go-live checks. The menu bar hides at the top of the screen; move the mouse to the small handle at the top edge to bring it back.</p>
     <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
-    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
+    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. A new trade starts a few dollars down: selling it right away would cost the fee and slippage both ways, about ${p100(2 * (t.feeRate + t.slippageRate))} of the trade. When two strategies hold the same coins (a fast and a slow version of one rule), their lines match until their exits differ; the one underneath shows as a wide, faint band around the other. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>
