@@ -25,6 +25,7 @@ const state = {
   /** @type {any} Results for the run being shown. */ results: null,
   /** @type {Record<string, string>} */ colors: {},
   /** @type {any[]} */ charts: [],
+  /** @type {ResizeObserver[]} */ observers: [],
   /** @type {number|null} Past run being viewed; null means the current run. */ viewRun: null,
   /** Coins page: list every coin bought, not just the best 15. */ allCoins: false,
 };
@@ -323,6 +324,8 @@ function openRun(id) {
 // ---------- charts ----------
 
 function destroyCharts() {
+  for (const o of state.observers) o.disconnect();
+  state.observers = [];
   for (const c of state.charts) c.remove();
   state.charts = [];
 }
@@ -336,7 +339,7 @@ function localTick(t, type) {
   if (type === 0) return String(d.getFullYear());
   if (type === 1) return d.toLocaleDateString([], { month: 'short' });
   if (type === 2) return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
 
 /** @param {HTMLElement} el @param {(v: any) => string} [priceFormatter] */
@@ -357,6 +360,15 @@ function baseChart(el, priceFormatter = price) {
     localization: { priceFormatter, timeFormatter: (/** @type {number} */ t) => new Date(t * 1000).toLocaleString() },
   });
   state.charts.push(chart);
+  // After the window changes size, show the whole range again: the chart
+  // library keeps the old scroll position, which can leave the lines off-screen.
+  let frame = 0;
+  const ro = new ResizeObserver(() => {
+    cancelAnimationFrame(frame);
+    frame = requestAnimationFrame(() => state.charts.includes(chart) && chart.timeScale().fitContent());
+  });
+  ro.observe(el);
+  state.observers.push(ro);
   return chart;
 }
 
@@ -465,7 +477,7 @@ function balanceChart(el, lines, start, span = {}) {
   chart.applyOptions({
     grid: { vertLines: { visible: false }, horzLines: { color: css('--chart-grid') } },
     rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.08 } },
-    timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 2, lockVisibleTimeRangeOnResize: true },
+    timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 2 },
     crosshair: {
       mode: 0,
       vertLine: { color: css('--text-muted'), width: 1, style: 3, labelVisible: false },
@@ -732,6 +744,11 @@ async function scoreboardPage(view) {
  */
 function coinTable(coins, limit) {
   if (!coins.length) return `<div class="empty">No coins bought yet.</div>`;
+  // Different coins can share a ticker; tell them apart by the end of their pool address.
+  const seen = new Map();
+  for (const c of coins) seen.set(c.symbol.toLowerCase(), (seen.get(c.symbol.toLowerCase()) ?? 0) + 1);
+  const name = (/** @type {any} */ c) =>
+    `<b title="${esc(c.poolAddress)}">${esc(c.symbol)}</b>${seen.get(c.symbol.toLowerCase()) > 1 ? ` <span class="muted mono addr">…${esc(c.poolAddress.slice(-4))}</span>` : ''}`;
   return `<table class="t compact coin-rank"><thead><tr>
       <th class="num">#</th><th>Coin</th><th class="num">Trades</th><th class="num" title="Closed trades that made money">Won</th><th class="num">Open</th>
       <th class="num" title="Closed profit plus open trades if sold now, after costs">Profit</th><th class="num">Last</th>
@@ -740,7 +757,7 @@ function coinTable(coins, limit) {
       .map(
         (c, i) => `<tr class="link" data-href="#/coin/${encodeURIComponent(c.poolAddress)}">
         <td class="num muted">${i + 1}</td>
-        <td><b>${esc(c.symbol)}</b> <span class="holders">${c.strategies.map((/** @type {string} */ id) => `<span title="${esc(nameOf(id))}">${dot(id)}</span>`).join('')}</span></td>
+        <td>${name(c)} <span class="holders">${c.strategies.map((/** @type {string} */ id) => `<span title="${esc(nameOf(id))}">${dot(id)}</span>`).join('')}</span></td>
         <td class="num">${c.trades}</td>
         <td class="num">${c.closed ? `${c.wins}/${c.closed}` : '–'}</td>
         <td class="num">${c.open || ''}</td>

@@ -350,3 +350,4 @@ table.t.trades { max-width: 760px; }
 .chart-feed .tip-kind { font-size: 10px; width: 10px; }
 .more-btn { margin: 8px 0 0 10px; }
 @media (max-width: 700px) { .chart-feed { display: none; } }
+.addr { font-size: 11px; }
