@@ -3,13 +3,15 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ROOT } from './config.js';
-import { strategyResults, calibration, coinResults, GO_LIVE } from './engine/stats.js';
+import { strategyResults, calibration, coinResults, priceHistory, GO_LIVE } from './engine/stats.js';
 import { breakevenMove } from './engine/paper.js';
 import { RANDOM_STRATEGY } from './engine/signal-loader.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 /** Changes on every start, so updated page files load fresh after a restart. */
 const BOOT_ID = Date.now().toString(36);
+/** Points on each balance-over-time line. The chart samples to its own grid, so more would not show. */
+const CURVE_POINTS = 400;
 const TYPES = /** @type {Record<string, string>} */ ({
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -72,6 +74,27 @@ export function createServer({ store, config, signals, strategies, provider, app
   const latestPrice = (pool) => {
     const s = store.latestSnapshot(pool);
     return s ? { price: s.priceUsd, liquidityUsd: s.liquidityUsd } : null;
+  };
+
+  /**
+   * Moments to chart each book's balance at, evenly spaced over the run, with
+   * the saved prices of every coin it traded. A finished run's never changes, so it's kept.
+   * @type {Map<string, import('./engine/stats.js').Timeline>}
+   */
+  const pastTimelines = new Map();
+  /** @param {import('./types.js').PaperTrade[]} trades @param {number} start @param {number} end */
+  const timeline = (trades, start, end) => {
+    const key = `${trades.length}:${start}:${end}`;
+    const kept = pastTimelines.get(key);
+    if (kept) return kept;
+    const steps = Math.min(CURVE_POINTS, Math.max(1, Math.ceil((end - start) / 15_000)));
+    const times = Array.from({ length: steps + 1 }, (_, i) => Math.round(start + ((end - start) * i) / steps));
+    const opened = trades.filter((t) => t.openedAt !== null);
+    const from = Math.min(start, ...opened.map((t) => /** @type {number} */ (t.openedAt)));
+    const pools = [...new Set(opened.map((t) => t.poolAddress))];
+    const made = { times, priceAt: priceHistory(store.pricesBetween(pools, from, end)) };
+    if (end < Date.now() - 60_000) pastTimelines.set(key, made);
+    return made;
   };
 
   /** @param {URLSearchParams} q */
@@ -177,7 +200,7 @@ export function createServer({ store, config, signals, strategies, provider, app
         runId: run,
         startingBankrollUsd: bankroll,
         breakevenMovePct: breakevenMove(costs),
-        strategies: strategyResults({ trades, strategies: ids, startingBankroll: bankroll, latestPrice, window: { start, end }, tested: ids.length }),
+        strategies: strategyResults({ trades, strategies: ids, startingBankroll: bankroll, latestPrice, window: { start, end }, tested: ids.length, timeline: timeline(trades, start, end) }),
         // Paper-run clock from the go-live rules: stops longer than 5 minutes don't count.
         clock: { startedAt: start, activeMs: store.activeMs(start, end, GO_LIVE.maxGapMs), targetMs: GO_LIVE.paperRunMs },
         calibration: calibration(trades),

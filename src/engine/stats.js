@@ -142,7 +142,75 @@ export function verdict(rule, twin, tested = 1) {
  * @property {TradeSummary} all
  * @property {Record<string, number>} exitReasons
  * @property {{t: number, equity: number}[]} equityCurve  Realized only, by close time.
+ * @property {{t: number, equity: number}[]} valueCurve   Balance at each timeline moment, open trades as if sold then. Empty without a timeline.
  */
+
+/**
+ * @typedef {Object} Timeline
+ * @property {number[]} times  Moments to value the books at, oldest first.
+ * @property {(poolAddress: string, t: number) => {price: number, liquidityUsd: number|null}|null} priceAt  Latest saved price at or before t.
+ */
+
+/**
+ * Price lookup over saved snapshots: the latest price at or before a moment.
+ * @param {{poolAddress: string, ts: number, priceUsd: number, liquidityUsd: number|null}[]} rows  Oldest first.
+ * @returns {Timeline['priceAt']}
+ */
+export function priceHistory(rows) {
+  /** @type {Map<string, {ts: number[], price: number[], liq: (number|null)[]}>} */
+  const byPool = new Map();
+  for (const r of rows) {
+    let h = byPool.get(r.poolAddress);
+    if (!h) byPool.set(r.poolAddress, (h = { ts: [], price: [], liq: [] }));
+    h.ts.push(r.ts);
+    h.price.push(r.priceUsd);
+    h.liq.push(r.liquidityUsd);
+  }
+  return (pool, t) => {
+    const h = byPool.get(pool);
+    if (!h || h.ts[0] > t) return null;
+    let lo = 0;
+    let hi = h.ts.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (h.ts[mid] <= t) lo = mid;
+      else hi = mid - 1;
+    }
+    return { price: h.price[lo], liquidityUsd: h.liq[lo] };
+  };
+}
+
+/**
+ * A book's balance at each moment: finished trades' profit plus open trades as
+ * if sold at that moment's saved price, after costs. The same sum as equityUsd,
+ * taken back in time. An open trade with no saved price yet counts at cost.
+ * @param {PaperTrade[]} mine
+ * @param {number} startingBankroll
+ * @param {Timeline} timeline
+ */
+function valueCurve(mine, startingBankroll, { times, priceAt }) {
+  const filled = mine.filter((t) => (t.status === 'open' || t.status === 'closed') && t.openedAt !== null);
+  const closes = filled.filter((t) => t.status === 'closed').sort((a, b) => (a.closedAt ?? 0) - (b.closedAt ?? 0));
+  const opens = [...filled].sort((a, b) => (a.openedAt ?? 0) - (b.openedAt ?? 0));
+  let realized = 0;
+  let ci = 0;
+  let oi = 0;
+  /** @type {Set<PaperTrade>} */
+  const held = new Set();
+  return times.map((at) => {
+    while (oi < opens.length && (opens[oi].openedAt ?? 0) <= at) held.add(opens[oi++]);
+    while (ci < closes.length && (closes[ci].closedAt ?? 0) <= at) {
+      realized += closes[ci].pnlUsd ?? 0;
+      held.delete(closes[ci++]);
+    }
+    let unrealized = 0;
+    for (const t of held) {
+      const m = priceAt(t.poolAddress, at);
+      if (m !== null) unrealized += liquidationValue(t, m.price, m.liquidityUsd).proceedsUsd - t.sizeUsd;
+    }
+    return { t: at, equity: startingBankroll + realized + unrealized };
+  });
+}
 
 /**
  * @typedef {Object} GoLiveCheck
@@ -199,9 +267,10 @@ export function goLiveChecks(rule, twin, window) {
  * @param {PaperTrade[]} mine
  * @param {number} startingBankroll
  * @param {(poolAddress: string) => {price: number, liquidityUsd: number|null}|null} latestPrice
+ * @param {Timeline} [timeline]
  * @returns {BookResult}
  */
-function bookResult(mine, startingBankroll, latestPrice) {
+function bookResult(mine, startingBankroll, latestPrice, timeline) {
   const closed = mine.filter((t) => t.status === 'closed');
   const open = mine.filter((t) => t.status === 'open');
   const pending = mine.filter((t) => t.status === 'pending');
@@ -229,6 +298,7 @@ function bookResult(mine, startingBankroll, latestPrice) {
     all: summarize(closed),
     exitReasons,
     equityCurve,
+    valueCurve: timeline ? valueCurve(mine, startingBankroll, timeline) : [],
   };
 }
 
@@ -240,9 +310,10 @@ function bookResult(mine, startingBankroll, latestPrice) {
  * @param {(poolAddress: string) => {price: number, liquidityUsd: number|null}|null} a.latestPrice
  * @param {{start: number, end: number}} [a.window]  The run's time span, for the "both halves" check.
  * @param {number} [a.tested]  Strategies tested side by side (sets the luck bar).
+ * @param {Timeline} [a.timeline]  Moments and saved prices for each book's balance over time.
  * @returns {StrategyResult[]}
  */
-export function strategyResults({ trades, strategies, startingBankroll, latestPrice, window, tested }) {
+export function strategyResults({ trades, strategies, startingBankroll, latestPrice, window, tested, timeline }) {
   const closedIn = (/** @type {string} */ book) => trades.filter((t) => t.book === book && t.status === 'closed');
   const rows = strategies.map((strategy) => ({
     strategy,
@@ -250,11 +321,13 @@ export function strategyResults({ trades, strategies, startingBankroll, latestPr
       trades.filter((t) => t.book === strategy),
       startingBankroll,
       latestPrice,
+      timeline,
     ),
     twin: bookResult(
       trades.filter((t) => t.book === `${RANDOM_STRATEGY}:${strategy}`),
       startingBankroll,
       latestPrice,
+      timeline,
     ),
     verdict: verdict(closedIn(strategy), closedIn(`${RANDOM_STRATEGY}:${strategy}`), tested ?? strategies.length),
     checks: goLiveChecks(closedIn(strategy), closedIn(`${RANDOM_STRATEGY}:${strategy}`), window ?? spanOf(trades)),
@@ -275,6 +348,7 @@ export function strategyResults({ trades, strategies, startingBankroll, latestPr
     equityUsd: avg((b) => b.equityUsd),
     unrealizedPnlUsd: avg((b) => b.unrealizedPnlUsd),
     equityCurve: [],
+    valueCurve: (timeline?.times ?? []).map((t, i) => ({ t, equity: avg((b) => b.valueCurve[i].equity) })),
     twin: null,
     verdict: null,
     checks: null,

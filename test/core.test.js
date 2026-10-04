@@ -9,7 +9,7 @@ import { normalizeResponse } from '../src/providers/geckoterminal.js';
 import { buildPendingTrade, fillPending, exitReasonFor, closeTrade, breakevenMove, priceImpact } from '../src/engine/paper.js';
 import { loadSignals } from '../src/engine/signal-loader.js';
 import { runCycle } from '../src/engine/cycle.js';
-import { strategyResults, wilson, calibration, verdict, goLiveChecks, coinResults } from '../src/engine/stats.js';
+import { strategyResults, wilson, calibration, verdict, goLiveChecks, coinResults, priceHistory } from '../src/engine/stats.js';
 import { Store } from '../src/db.js';
 import { DEFAULTS } from '../src/config.js';
 import { runSettings, canContinue } from '../src/engine/runs.js';
@@ -562,6 +562,33 @@ test('coin results rank coins by strategy profit, random pickers left out', () =
   assert.deepEqual(coins[1].strategies, ['hawk', 'falcon']);
   assert.equal(coins[1].wins, 1);
   assert.ok(coins[0].openUsd > 9.9 && coins[0].openUsd <= 10, `open value ${coins[0].openUsd}`);
+});
+
+test('balance over time counts open trades at the price saved at each moment', () => {
+  const base = { sizeUsd: 50, feeRate: 0, slippageRate: 0, quantity: 100, closedAt: null, pnlUsd: null, poolAddress: 'A' };
+  const trades = /** @type {any[]} */ ([
+    { ...base, strategy: 'hawk', book: 'hawk', status: 'closed', openedAt: 1000, closedAt: 3000, pnlUsd: -20 },
+    { ...base, strategy: 'hawk', book: 'hawk', status: 'open', openedAt: 2500, poolAddress: 'B' },
+    { ...base, strategy: 'random', book: 'random:hawk', status: 'open', openedAt: 1000 },
+  ]);
+  // A's 100 tokens bought for $50: worth $40 at t=2000, so -$10 then. B is bought at $0.50 and worth $0.70 by t=4000.
+  const priceAt = priceHistory([
+    { poolAddress: 'A', ts: 1000, priceUsd: 0.5, liquidityUsd: null },
+    { poolAddress: 'A', ts: 2000, priceUsd: 0.4, liquidityUsd: null },
+    { poolAddress: 'B', ts: 2500, priceUsd: 0.5, liquidityUsd: null },
+    { poolAddress: 'B', ts: 3500, priceUsd: 0.7, liquidityUsd: null },
+  ]);
+  const [hawk, random] = strategyResults({
+    trades,
+    strategies: ['hawk'],
+    startingBankroll: 1000,
+    latestPrice: () => null,
+    timeline: { times: [500, 2000, 3000, 4000], priceAt },
+  });
+  const at = (/** @type {any[]} */ c) => c.map((p) => Math.round(p.equity * 100) / 100);
+  assert.deepEqual(at(hawk.valueCurve), [1000, 990, 980, 1000], 'before buying, open at a loss, sold, then the next trade up $20');
+  assert.deepEqual(at(hawk.twin?.valueCurve ?? []), [1000, 990, 990, 990]);
+  assert.deepEqual(at(random.valueCurve), at(hawk.twin?.valueCurve ?? []), 'the random row averages the random pickers');
 });
 
 test('a new run keeps pricing and closing trades left open in the old run', async () => {

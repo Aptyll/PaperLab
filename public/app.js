@@ -391,12 +391,21 @@ function toSeries(pts) {
  * @param {number} start
  */
 function averageCurve(curves, start) {
+  // Balance-over-time lines share their moments, so they average point by point.
+  if (curves.length && curves.every((c) => c.length && c.length === curves[0].length && c[0].t === curves[0][0].t)) {
+    return curves[0].map((/** @type {any} */ p, /** @type {number} */ i) => ({ t: p.t, equity: curves.reduce((a, c) => a + c[i].equity, 0) / curves.length }));
+  }
   const events = curves.flatMap((c, i) => c.map((p) => ({ t: p.t, i, v: p.equity }))).sort((a, b) => a.t - b.t);
   const now = curves.map(() => start);
   return events.map((e) => {
     now[e.i] = e.v;
     return { t: e.t, equity: now.reduce((a, b) => a + b, 0) / now.length };
   });
+}
+
+/** A book's balance over time, open trades as if sold at each moment; older servers sent finished trades only. @param {any} book */
+function curveOf(book) {
+  return book.valueCurve?.length ? book.valueCurve : book.equityCurve;
 }
 
 /** A book's balance at a moment: its latest change at or before it. @param {{t: number, v: number}[]} pts @param {number} t */
@@ -456,7 +465,8 @@ const FEED_ITEMS = 5;
  * @param {{from?: number|null, to?: number|null}} [span]  Run start and end, ms.
  */
 function balanceChart(el, lines, start, span = {}) {
-  if (!lines.some((l) => l.curve.length || l.trades?.length || (l.now !== undefined && Math.abs(l.now - start) >= 0.005))) {
+  const moved = (/** @type {number|undefined} */ v) => v !== undefined && Math.abs(v - start) >= 0.005;
+  if (!lines.some((l) => l.trades?.length || moved(l.now) || l.curve.some((p) => moved(p.equity)))) {
     const earlier = state.viewRun === null && runsInOrder().length > 1 ? ' Earlier results are under <a href="#/guide/past-runs">Past runs</a>.' : '';
     el.innerHTML = `<div class="empty chart-empty">No trades yet in this run.${earlier}</div>`;
     return;
@@ -749,13 +759,13 @@ async function scoreboardPage(view) {
   /** @type {ChartLine[]} */
   const lines = rows.map((r) => ({
     color: colorOf(r.strategy),
-    curve: r.equityCurve,
+    curve: curveOf(r),
     dashed: false,
     label: nameOf(r.strategy),
     trades: mine.filter((/** @type {any} */ t) => t.strategy === r.strategy),
     now: r.equityUsd,
   }));
-  const randoms = rows.map((r) => r.twin.equityCurve);
+  const randoms = rows.map((r) => curveOf(r.twin));
   const randomNow = rows.reduce((a, r) => a + r.twin.equityUsd, 0) / Math.max(1, rows.length);
   if (randoms.some((c) => c.length) || Math.abs(randomNow - res.startingBankrollUsd) >= 0.005) {
     lines.push({ color: '', curve: averageCurve(randoms, res.startingBankrollUsd), dashed: true, label: 'Random (average)', now: randomNow });
@@ -896,8 +906,8 @@ async function rulePage(view, id) {
     balanceChart(
       el,
       [
-        { color: colorOf(id), curve: r.equityCurve, dashed: false, label: nameOf(id), trades, now: r.equityUsd },
-        { color: '', curve: tw.equityCurve, dashed: true, label: 'Random', now: tw.equityUsd },
+        { color: colorOf(id), curve: curveOf(r), dashed: false, label: nameOf(id), trades, now: r.equityUsd },
+        { color: '', curve: curveOf(tw), dashed: true, label: 'Random', now: tw.equityUsd },
       ],
       res.startingBankrollUsd,
       chartSpan(res),
@@ -1044,7 +1054,7 @@ function guidePage(view) {
     <p><b>The strip above the chart.</b> First your portfolio, then each strategy in its chart color, most profit first. A strategy's number is its profit so far, open trades counted as if sold now. Hover one for its rule, balance, how far it is ahead of its random picker, win rate and go-live checks. The menu bar hides at the top of the screen; move the mouse to the small handle at the top edge to bring it back.</p>
     <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
-    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Lines move when trades finish; the last step to now adds open trades as if sold now, so each line ends at the strip's number. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
+    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>

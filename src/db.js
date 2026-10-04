@@ -677,6 +677,30 @@ export class Store {
     return rows.map((r) => /** @type {Snapshot} */ (fromRow(SNAPSHOT_COLS, r)));
   }
 
+  /**
+   * Saved prices of some pools up to a moment, oldest first: just what valuing open trades back in time needs.
+   * @param {string[]} pools
+   * @param {number} sinceTs
+   * @param {number} untilTs
+   * @returns {{poolAddress: string, ts: number, priceUsd: number, liquidityUsd: number|null}[]}
+   */
+  pricesBetween(pools, sinceTs, untilTs) {
+    if (!pools.length) return [];
+    const rows = this.db
+      .prepare(
+        `SELECT pool_address, ts, price_usd, liquidity_usd FROM snapshots
+         WHERE pool_address IN (SELECT value FROM json_each(?)) AND ts >= ? AND ts <= ?
+         ORDER BY pool_address, ts, id`,
+      )
+      .all(JSON.stringify(pools), sinceTs, untilTs);
+    return rows.map((r) => ({
+      poolAddress: String(r.pool_address),
+      ts: Number(r.ts),
+      priceUsd: Number(r.price_usd),
+      liquidityUsd: r.liquidity_usd === null ? null : Number(r.liquidity_usd),
+    }));
+  }
+
   /** @param {number} id */
   snapshotById(id) {
     const r = this.db.prepare('SELECT * FROM snapshots WHERE id = ?').get(id);
