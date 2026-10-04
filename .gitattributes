@@ -1,0 +1,5 @@
+# Windows scripts keep Windows line endings, whatever the checkout or ZIP does.
+*.vbs -text
+*.cmd -text
+*.ps1 -text
+*.ico binary

@@ -116,6 +116,9 @@ export async function runCycle(deps) {
     let next;
     if (t.matchedTradeId !== null && cancelledIds.has(t.matchedTradeId)) {
       next = { ...t, status: 'cancelled', cancelReason: 'twin_cancelled', closedAt: ts };
+    } else if (ts - t.signalAt > config.trade.staleAfterMin * 60_000) {
+      // Live data was off (or the app stopped) since the signal: too late to act on it.
+      next = { ...t, status: 'cancelled', cancelReason: 'no_data', closedAt: ts };
     } else {
       next = fillPending(t, snap ?? null, config.trade.maxChasePct, ts);
     }

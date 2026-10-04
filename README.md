@@ -18,6 +18,8 @@ npm run check      # type check (JSDoc + // @ts-check)
 
 `npm start` stores data in `data/paper.sqlite`. The demo writes to `data/demo.sqlite`, so fake trades never mix with real research data. Delete a file to start over.
 
+On Windows, `launcher/windows/Create desktop icon.cmd` adds a Paper Lab desktop icon that starts the app hidden with live data off (`--paused`) and opens the page. Nothing is added to startup. The page has Turn On / Turn off for live data and a quit button.
+
 ## Screens
 
 - **Scoreboard** (home): a paper-run clock toward the 3 hours the go-live rules ask for, then one card per rule. The big number is how far the rule is ahead of its random twin; the six pips are the go-live checks (hover for each); the bar along the bottom fills toward 30 closed trades. The rule closest to going live is outlined. Balance chart, open positions and activity sit below in panels you can fold away.

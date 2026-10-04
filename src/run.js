@@ -35,19 +35,24 @@ const runId = store.beginRun(runSettings(config, signals), Date.now());
 const scorer = config.ai.enabled ? await createClaudeScorer(config.ai) : disabledScorer;
 
 const app = new App({ store, provider, signals, config, scorer, runId });
-const server = createServer({ store, config, signals, provider, app, aiEnabled: scorer.enabled, runId });
+let shutdown = () => {};
+const server = createServer({ store, config, signals, provider, app, aiEnabled: scorer.enabled, runId, onQuit: () => shutdown() });
 
 server.listen(config.port, config.host, () => {
   console.log(`Paper lab on http://localhost:${config.port}  (data: ${provider.id}, db: ${config.dbPath})`);
   console.log(`Signals: ${signals.map((s) => s.id).join(', ')}. AI scoring: ${scorer.enabled ? 'on' : 'off'}.`);
-  app.start();
+  if (config.startLive) app.start();
+  else console.log('Live data is off. Press "Turn On Live Data" on the page to start.');
 });
 
-const shutdown = () => {
-  app.stop();
-  server.close();
-  store.close();
-  process.exit(0);
+// Stop polling, let a poll in progress finish writing, then exit.
+shutdown = () => {
+  void app.stop().finally(() => {
+    server.close();
+    store.close();
+    console.log('Paper Lab stopped.');
+    process.exit(0);
+  });
 };
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

@@ -21,6 +21,7 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
  * @property {import('./types.js').TradeRules} trade
  * @property {Record<string, Record<string, number>>} signalParams  Per-signal overrides, keyed by signal id.
  * @property {{enabled: boolean, model: string, effort: 'low'|'medium'|'high'}} ai
+ * @property {boolean} startLive   Fetch and trade from the moment it starts. --paused (the desktop icon) waits for the button.
  */
 
 /** @type {Config} */
@@ -50,6 +51,7 @@ export const DEFAULTS = {
   },
   signalParams: {},
   ai: { enabled: false, model: 'claude-opus-5-5', effort: 'low' },
+  startLive: true,
 };
 
 /**
@@ -88,6 +90,7 @@ export function loadConfig(argv = process.argv.slice(2)) {
       trade: { timeLimitMin: 3, reentryCooldownMin: 1, staleAfterMin: 1 },
     });
   }
+  if (argv.includes('--paused')) cfg = deepMerge(cfg, { startLive: false });
   const portArg = argv.find((a) => a.startsWith('--port='));
   if (portArg) cfg = deepMerge(cfg, { port: Number(portArg.split('=')[1]) });
   return cfg;

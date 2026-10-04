@@ -27,13 +27,17 @@ const TYPES = /** @type {Record<string, string>} */ ({
  * @param {import('./app.js').App|null} deps.app
  * @param {boolean} deps.aiEnabled
  * @param {number} deps.runId  The run being traded now. Pages show it unless ?run= asks for an earlier one.
+ * @param {() => void} [deps.onQuit]  Shuts the whole app down (the Quit button).
  * @returns {http.Server}
  */
-export function createServer({ store, config, signals, provider, app, aiEnabled, runId }) {
+export function createServer({ store, config, signals, provider, app, aiEnabled, runId, onQuit }) {
   /** @type {Set<http.ServerResponse>} */
   const sseClients = new Set();
   app?.on('cycle', (c) => {
     for (const res of sseClients) res.write(`event: cycle\ndata: ${JSON.stringify(c)}\n\n`);
+  });
+  app?.on('state', (live) => {
+    for (const res of sseClients) res.write(`event: state\ndata: ${JSON.stringify({ live })}\n\n`);
   });
 
   const signalMeta = signals.map((s) => ({ id: s.id, name: s.name, description: s.description, params: s.params }));
@@ -88,6 +92,7 @@ export function createServer({ store, config, signals, provider, app, aiEnabled,
         randomStrategy: RANDOM_STRATEGY,
         runId,
         runs: store.runs(),
+        live: app?.running ?? false,
       };
     }
     if (pathname === '/api/tokens') {
@@ -169,11 +174,44 @@ export function createServer({ store, config, signals, provider, app, aiEnabled,
     return name === 'localhost' || name === '127.0.0.1' || name === '::1';
   };
 
+  /** @param {string|undefined} origin */
+  const sameOrigin = (origin) => {
+    if (!origin) return false;
+    try {
+      const u = new URL(origin);
+      return u.protocol === 'http:' && allowedHost(u.host) && Number(u.port || 80) === config.port;
+    } catch {
+      return false;
+    }
+  };
+
   return http.createServer(async (req, res) => {
     try {
       if (!allowedHost(req.headers.host)) return send(res, 403, 'text/plain', 'Forbidden host');
-      if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'text/plain', 'Method not allowed');
       const url = new URL(req.url ?? '/', 'http://localhost');
+      if (req.method === 'POST') {
+        // The only things a page can change: live data on/off, and quit.
+        // Another website open in the same browser could try to send these, so
+        // require our own origin plus a custom header (which forces the browser
+        // to ask permission first, and we never grant it).
+        if (!sameOrigin(req.headers.origin) || req.headers['x-paper-lab'] !== '1') return send(res, 403, 'text/plain', 'Forbidden');
+        if (url.pathname === '/api/live/on') {
+          app?.start();
+          return send(res, 200, 'application/json', JSON.stringify({ live: true }));
+        }
+        if (url.pathname === '/api/live/off') {
+          await app?.stop();
+          return send(res, 200, 'application/json', JSON.stringify({ live: false }));
+        }
+        if (url.pathname === '/api/quit' && onQuit) {
+          send(res, 200, 'application/json', '{"quitting":true}');
+          for (const c of sseClients) c.end();
+          setImmediate(onQuit);
+          return;
+        }
+        return send(res, 404, 'application/json', '{"error":"not found"}');
+      }
+      if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'text/plain', 'Method not allowed');
 
       if (url.pathname === '/api/events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });

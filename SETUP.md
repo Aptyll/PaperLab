@@ -55,6 +55,18 @@ The first prices appear within a minute. Trades start opening as soon as a rule 
 - **To stop:** click the Terminal (or black) window and press **Ctrl + C**.
 - **To start again later:** repeat Step 3. Your trades and history are saved and pick up where you left off.
 
+## Optional on Windows: a desktop icon
+
+Instead of Step 3 every time, you can start Paper Lab from an icon:
+
+1. Open the Paper Lab folder, then `launcher`, then `windows`.
+2. Double-click **Create desktop icon**. A window says "Done". Close it.
+3. From now on, double-click **Paper Lab** on your desktop. No black window appears; Chrome opens the dashboard.
+
+The page opens with live data **off**: nothing is fetched or traded until you press **Turn On Live Data**. **Turn off** (top right) stops the data. The **⏻** button quits Paper Lab completely, so nothing is left running.
+
+Nothing starts by itself when your computer turns on. The icon is the only way in. To remove it, delete the icon.
+
 ## Getting a newer version
 
 Your trades live in the `data` folder inside the Paper Lab folder. Updates never delete them: if a new version needs to change how they're stored, it saves a full copy first, and older results stay viewable from the run menu at the top of the page.

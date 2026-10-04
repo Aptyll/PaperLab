@@ -29,18 +29,28 @@ export class App extends EventEmitter {
     this.lastCycle = null;
     /** @type {Promise<void>} */
     this.scoring = Promise.resolve();
+    /** @type {Promise<void>} The poll in progress, if any. */
+    this.inFlight = Promise.resolve();
   }
 
+  /** Turn live data on: poll now, then on the usual interval. */
   start() {
     if (this.running) return;
     this.running = true;
-    void this.tick();
+    this.emit('state', true);
+    this.inFlight = this.tick();
   }
 
+  /**
+   * Turn live data off. Nothing is fetched or traded until start() again.
+   * Resolves once any poll already under way has finished writing.
+   */
   stop() {
+    if (this.running) this.emit('state', false);
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    return this.inFlight;
   }
 
   async tick() {
@@ -67,7 +77,9 @@ export class App extends EventEmitter {
     this.emit('cycle', this.lastCycle);
     if (!this.running) return;
     const wait = Math.max(1000, this.deps.config.pollIntervalSec * 1000 - (Date.now() - started));
-    this.timer = setTimeout(() => void this.tick(), wait);
+    this.timer = setTimeout(() => {
+      this.inFlight = this.tick();
+    }, wait);
   }
 
   /** Score trades one at a time so a slow model never blocks polling. @param {PaperTrade} trade */

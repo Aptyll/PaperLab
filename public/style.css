@@ -107,6 +107,33 @@ a:hover { text-decoration: underline; }
 .health { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .health.ok { background: var(--good); }
 .health.bad { background: var(--critical); }
+.health.off { background: var(--text-muted); }
+#live-ctl { display: inline-flex; margin-right: 10px; }
+.btn-live {
+  background: var(--good);
+  color: #06140a;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 14px;
+  font: 600 12px var(--sans);
+  cursor: pointer;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--good) 25%, transparent);
+}
+.btn-live:hover { filter: brightness(1.1); }
+.btn-ghost, .btn-icon {
+  background: none;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font: 11px var(--sans);
+  cursor: pointer;
+}
+.btn-ghost:hover, .btn-icon:hover { color: var(--text-primary); border-color: var(--text-muted); }
+.btn-icon { margin-left: 12px; font-size: 13px; line-height: 1; padding: 4px 7px; }
+.btn-live:disabled, .btn-ghost:disabled { opacity: 0.5; cursor: default; }
+.goodbye { margin: 18vh auto; max-width: 420px; text-align: center; padding: 0 16px; }
+.goodbye .brand { margin-bottom: 14px; }
 
 /* ---- page ---- */
 .view { flex: 1; overflow: auto; padding: 22px 20px 40px; }

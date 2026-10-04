@@ -137,7 +137,16 @@ function renderTopbar() {
   const el = /** @type {HTMLElement} */ (document.getElementById('health'));
   el.title = tip;
   const failed = s.lastCycle && !s.lastCycle.ok;
-  el.innerHTML = `${s.demo ? '<span class="badge-demo">DEMO</span>' : ''}<span class="health ${healthy && !failed ? 'ok' : 'bad'}"></span><span class="${healthy ? 'muted' : 'neg'}">${when}</span>`;
+  const ctl = /** @type {HTMLElement} */ (document.getElementById('live-ctl'));
+  if (!s.live) {
+    // Off until asked: the desktop icon starts Paper Lab with live data off.
+    ctl.innerHTML = `<button type="button" class="btn-live" data-live="on">Turn On Live Data</button>`;
+    el.title = 'Live data is off. Nothing is fetched or traded until you turn it on.';
+    el.innerHTML = `${s.demo ? '<span class="badge-demo">DEMO</span>' : ''}<span class="health off"></span><span class="muted">off</span>`;
+  } else {
+    ctl.innerHTML = `<button type="button" class="btn-ghost" data-live="off" title="Stop fetching prices and making paper trades">Turn off</button>`;
+    el.innerHTML = `${s.demo ? '<span class="badge-demo">DEMO</span>' : ''}<span class="health ${healthy && !failed ? 'ok' : 'bad'}"></span><span class="${healthy ? 'muted' : 'neg'}">${when}</span>`;
+  }
   renderRunPicker();
   for (const a of document.querySelectorAll('.nav a')) {
     const r = route();
@@ -724,6 +733,7 @@ async function refresh() {
     renderTopbar();
     await render();
   } catch {
+    if (quitting) return;
     const el = document.getElementById('health');
     if (el) el.innerHTML = `<span class="health bad"></span><span class="neg">Can't reach Paper Lab. Is it still running?</span>`;
   }
@@ -765,7 +775,29 @@ window.addEventListener('hashchange', () => {
   void render();
 });
 
+/** @param {string} url */
+const post = (url) => fetch(url, { method: 'POST', headers: { 'x-paper-lab': '1' } });
+
+document.getElementById('live-ctl')?.addEventListener('click', async (e) => {
+  const b = /** @type {HTMLElement} */ (e.target).closest('[data-live]');
+  if (!b) return;
+  /** @type {HTMLButtonElement} */ (b).disabled = true;
+  await post(`/api/live/${b.getAttribute('data-live')}`).catch(() => {});
+  await refresh();
+});
+
+let quitting = false;
+document.getElementById('quit')?.addEventListener('click', async () => {
+  if (!confirm('Quit Paper Lab? Live data stops and the helper shuts down. Your trades are saved.')) return;
+  quitting = true;
+  events.close();
+  clearInterval(timer);
+  await post('/api/quit').catch(() => {});
+  document.body.innerHTML = `<div class="goodbye"><div class="brand">PAPER LAB</div><p>Paper Lab is off. Nothing is running.</p><p class="muted">Double-click the Paper Lab icon on your desktop to start it again. You can close this tab.</p></div>`;
+});
+
 const events = new EventSource('/api/events');
 events.addEventListener('cycle', () => void refresh());
-setInterval(() => void refresh(), 30_000);
+events.addEventListener('state', () => void refresh());
+const timer = setInterval(() => void refresh(), 30_000);
 void refresh();

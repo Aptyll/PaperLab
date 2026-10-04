@@ -404,3 +404,38 @@ test('go-live checks follow the written rules', () => {
   assert.equal(c.best, false, 'but not without it');
   assert.equal(c.halves, false, 'all the profit is in the second half');
 });
+
+test('controls: only this page can turn live data on or off, or quit', async () => {
+  const { createServer } = await import('../src/server.js');
+  const { EventEmitter } = await import('node:events');
+  const app = Object.assign(new EventEmitter(), {
+    running: false,
+    lastCycle: null,
+    start() { this.running = true; },
+    async stop() { this.running = false; },
+  });
+  let quit = 0;
+  const store = new Store(':memory:');
+  const config = { ...DEFAULTS, port: 0 };
+  const provider = /** @type {any} */ ({ id: 'simulated', callsInLastMinute: () => 0, totalCalls: () => 0 });
+  const server = createServer({ store, config, signals: [], provider, app: /** @type {any} */ (app), aiEnabled: false, runId: 1, onQuit: () => quit++ });
+  await new Promise((r) => server.listen(0, '127.0.0.1', () => r(null)));
+  config.port = /** @type {import('node:net').AddressInfo} */ (server.address()).port;
+  const base = `http://localhost:${config.port}`;
+  const post = (/** @type {string} */ p, /** @type {Record<string, string>} */ headers) => fetch(base + p, { method: 'POST', headers });
+  const ours = { origin: base, 'x-paper-lab': '1' };
+
+  assert.equal((await post('/api/live/on', { origin: 'http://evil.example', 'x-paper-lab': '1' })).status, 403, 'other websites are refused');
+  assert.equal((await post('/api/live/on', { origin: base })).status, 403, 'a plain form post is refused');
+  assert.equal(app.running, false);
+  assert.equal((await post('/api/live/on', ours)).status, 200);
+  assert.equal(app.running, true);
+  assert.equal((await (await fetch(base + '/api/status')).json()).live, true);
+  await post('/api/live/off', ours);
+  assert.equal(app.running, false);
+  await post('/api/quit', ours);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(quit, 1);
+  server.close();
+  store.close();
+});
