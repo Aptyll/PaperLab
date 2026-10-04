@@ -16,8 +16,8 @@ Node is the free program that runs Paper Lab.
 
 1. Make sure you're signed in to GitHub in your browser.
 2. Open this link. It downloads a ZIP file:
-   **https://github.com/Aptyll/Tool/archive/refs/heads/claude/project-thread-uhhaqy.zip**
-3. Double-click the ZIP to unzip it. You get a folder named something like `Tool-claude-project-thread-uhhaqy`.
+   **https://github.com/Aptyll/Tool/archive/refs/heads/main.zip**
+3. Double-click the ZIP to unzip it. You get a folder named `Tool-main`.
 4. Move that folder somewhere easy to find, like your Desktop or Documents.
 
 ## Step 3: Start it
