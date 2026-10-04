@@ -8,48 +8,21 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand">PAPER LAB <span class="muted">solana memecoin research</span></div>
-    <div class="badges">
-      <span class="badge badge-paper" title="No wallet, no real orders. Every trade here is simulated.">PAPER ONLY</span>
-      <span id="source-badge" class="badge">…</span>
-      <span id="poll-status" class="muted">waiting for first poll…</span>
-      <span id="calls" class="muted"></span>
-      <span id="ai-badge" class="badge"></span>
-    </div>
+    <a class="brand" href="#/">PAPER LAB</a>
+    <span class="badge-paper" title="No wallet, no real orders. Every trade here is simulated.">PAPER</span>
+    <nav class="nav">
+      <a href="#/" data-nav="home">Scoreboard</a>
+      <a href="#/coins" data-nav="coins">Coins</a>
+    </nav>
+    <span class="spacer"></span>
+    <span id="health" class="health-text muted">connecting…</span>
   </header>
 
-  <div class="layout">
-    <aside class="tokens">
-      <div class="panel-title">
-        Trending <span id="token-count" class="muted"></span>
-      </div>
-      <table class="grid" id="token-table">
-        <thead>
-          <tr>
-            <th class="num" title="Trending rank">#</th>
-            <th>Token</th>
-            <th class="num">Price</th>
-            <th class="num" title="Price change, 5 minutes">5m</th>
-            <th class="num" title="Liquidity">Liq</th>
-            <th class="num" title="Market cap (FDV if missing, shown in italics)">MC</th>
-            <th class="num" title="Pool age">Age</th>
-            <th class="num" title="Unique buyers / sellers, 5 minutes">B/S</th>
-          </tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </aside>
-
-    <main class="main">
-      <nav class="tabs" id="tabs" role="tablist"></nav>
-      <section id="view"></section>
-    </main>
-  </div>
+  <main id="view" class="view"></main>
 
   <footer class="footer muted">
-    Market data from <a href="https://www.geckoterminal.com" target="_blank" rel="noopener">GeckoTerminal</a>.
-    Charts by <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView Lightweight Charts</a>.
-    Simulated trades only. Nothing here is financial advice.
+    Simulated trades only. Data: <a href="https://www.geckoterminal.com" target="_blank" rel="noopener">GeckoTerminal</a>.
+    Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a>.
   </footer>
 
   <script src="/vendor/lightweight-charts.standalone.production.js"></script>

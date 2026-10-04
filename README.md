@@ -18,6 +18,12 @@ npm run check      # type check (JSDoc + // @ts-check)
 
 `npm start` stores data in `data/paper.sqlite`. The demo writes to `data/demo.sqlite`, so fake trades never mix with real research data. Delete a file to start over.
 
+## Screens
+
+- **Scoreboard** (home): one row per rule with its verdict against its random twin, a balance chart, and a feed of buys and sells. Click a row for that rule's page.
+- **Rule page**: balance vs twin, open trades with their live result, closed trades with the reason each one fired. Twin trades, skipped trades and every fire are folded away below.
+- **Coins**: the trending list. Coins below the liquidity floor are dimmed; dots show which rules hold a coin. Click one for its price chart with every buy and sell marked.
+
 ## How it works
 
 Every 60 seconds:
@@ -27,7 +33,7 @@ Every 60 seconds:
 3. **Fill** trades queued at the previous check, at this check's price, the way a person copying a signal by hand would buy about a minute later. If the price has already risen more than 5% since the signal, the trade is cancelled instead (cancelled trades cost nothing and are left out of results).
 4. **Close** open trades that hit stop loss (-20%), take profit (+40%) or the 60 minute limit. Prices are checked once per poll, so a fill happens at the observed price, which can be past the level. If a coin's pool loses more than 80% of its liquidity while held, the trade closes as **collapsed** and sells into what is left, which is usually a near-total loss.
 5. **Run signals** on every trending pool with at least **$100K liquidity** and at least one sell in the last 5 minutes (a guard against coins that can be bought but not sold). These match the live trading rules. When a signal fires it queues a $50 paper trade, unless that signal already holds the token, closed it in the last 30 minutes, or is out of cash.
-6. **Random twin.** Each time a signal queues a trade, that signal's random twin queues one on a randomly chosen token from the same filtered list, with the same size, costs, timing and exits. If the signal's trade is cancelled, so is the twin's. Every signal and every twin has its own $1,000. The Results tab shows each signal's "edge" over its twin.
+6. **Random twin.** Each time a signal queues a trade, that signal's random twin queues one on a randomly chosen token from the same filtered list, with the same size, costs, timing and exits. If the signal's trade is cancelled, so is the twin's. Every signal and every twin has its own $1,000. The scoreboard (home screen) shows each signal's "edge" over its twin and a verdict: too early, no edge, leaning, or clear.
 
 Costs per trade, each way: 0.3% DEX fee, 1.5% execution slippage (delay, bots), and price impact from the pool's depth (constant-product math: $50 into a $100K pool costs about 0.1% more, into a $20K pool about 0.5%). Before impact, a token has to rise about 3.7% just to break even.
 
@@ -50,7 +56,7 @@ All defaults are in `src/config.js`.
 
 ## Adding a signal
 
-Add one file to `src/signals/`. It is picked up on restart and gets its own tab, its own $1,000, and its own random twin.
+Add one file to `src/signals/`. It is picked up on restart and gets its own scoreboard row and detail page, its own $1,000, and its own random twin.
 
 ```js
 // src/signals/price-momentum.js
@@ -73,7 +79,7 @@ export default {
 
 ## AI scoring (off by default, costs money)
 
-When enabled, every newly opened trade is sent to Claude with its snapshot and recent history. Claude returns a probability that the trade closes in profit, and that probability is stored with the trade. The Results tab then shows a calibration table and a Brier score against a "base rate" baseline.
+When enabled, every newly opened trade is sent to Claude with its snapshot and recent history. Claude returns a probability that the trade closes in profit, and that probability is stored with the trade. The scoreboard then shows a calibration table and a Brier score against a "base rate" baseline.
 
 To turn it on:
 

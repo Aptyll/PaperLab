@@ -37,6 +37,21 @@ export function createServer({ store, config, signals, provider, app, aiEnabled 
 
   const signalMeta = signals.map((s) => ({ id: s.id, name: s.name, description: s.description, params: s.params }));
 
+  /**
+   * Add what the UI needs to explain a trade: the current move of open trades,
+   * and why the signal picked it.
+   * @param {import('./types.js').PaperTrade} t
+   * @param {Map<number|undefined, string>} why
+   */
+  const decorate = (t, why) => {
+    let markPct = null;
+    if (t.status === 'open' && t.entryPrice) {
+      const s = store.latestSnapshot(t.poolAddress);
+      if (s) markPct = s.priceUsd / t.entryPrice - 1;
+    }
+    return { ...t, markPct, why: t.signalEventId !== null ? why.get(t.signalEventId) ?? null : null };
+  };
+
   /** @param {string} pool */
   const latestPrice = (pool) => {
     const s = store.latestSnapshot(pool);
@@ -93,17 +108,23 @@ export function createServer({ store, config, signals, provider, app, aiEnabled 
     m = pathname.match(/^\/api\/strategies\/([a-z0-9-]+)$/);
     if (m) {
       const id = m[1];
+      const events = id === RANDOM_STRATEGY ? [] : store.recentSignalEvents(id, 5000);
+      const why = new Map(events.map((e) => [e.id, e.reason]));
       return {
-        events: id === RANDOM_STRATEGY ? [] : store.recentSignalEvents(id, 200),
-        trades: store.trades({ strategy: id, limit: 500 }),
+        events: events.slice(0, 200),
+        trades: store.trades({ book: id, limit: 500 }).map((t) => decorate(t, why)),
+        twinTrades: store.trades({ book: `${RANDOM_STRATEGY}:${id}`, limit: 500 }).map((t) => decorate(t, why)),
       };
     }
     if (pathname === '/api/trades') {
-      return store.trades({
-        strategy: q.get('strategy') ?? undefined,
-        status: q.get('status') ?? undefined,
-        limit: Math.min(Number(q.get('limit') ?? 500), 5000),
-      });
+      return store
+        .trades({
+          strategy: q.get('strategy') ?? undefined,
+          book: q.get('book') ?? undefined,
+          status: q.get('status') ?? undefined,
+          limit: Math.min(Number(q.get('limit') ?? 500), 5000),
+        })
+        .map((t) => decorate(t, new Map()));
     }
     if (pathname === '/api/results') {
       const trades = store.trades();
