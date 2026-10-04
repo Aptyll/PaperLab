@@ -84,7 +84,8 @@ Each trade is one API call. Scoring runs in the background and never delays poll
 
 ```
 src/
-  main.js              entry point
+  main.js              entry point (Node version check)
+  run.js               wires everything together and starts the server
   config.js            defaults + config.local.json
   types.js             JSDoc types: Snapshot, SignalModule, PaperTrade, ...
   db.js                SQLite schema and queries (node:sqlite)
