@@ -457,6 +457,110 @@ function interpolate(pts, t) {
   return b.t === a.t ? b.v : a.v + ((b.v - a.v) * (t - a.t)) / (b.t - a.t);
 }
 
+/**
+ * @typedef {Object} TradeMark
+ * @property {number} time   Seconds.
+ * @property {number} value  Where on the price scale.
+ * @property {boolean} sell
+ * @property {string} color
+ * @property {{time: number, value: number}} [from]  Its buy, for a sell: joined by a dotted hairline.
+ * @property {string} [label]  Small text beside a sell.
+ */
+
+/**
+ * Buy and sell marks drawn on the line itself: a hollow ring where a coin was
+ * bought, a solid dot where it was sold, a faint dotted hairline between the
+ * two. Drawn in device pixels so they stay crisp, and never stacked off the
+ * line the way the chart library's own markers are.
+ */
+class TradeMarks {
+  /** @param {TradeMark[]} marks @param {number[]} times  The series' times, oldest first: marks snap to the nearest. */
+  constructor(marks, times) {
+    this.marks = marks;
+    this.times = times;
+    /** @type {any} */ this.chart = null;
+    /** @type {any} */ this.series = null;
+    this.views = [{ zOrder: () => 'top', renderer: () => ({ draw: (/** @type {any} */ target) => this.draw(target) }) }];
+  }
+  /** @param {any} p */
+  attached(p) {
+    this.chart = p.chart;
+    this.series = p.series;
+  }
+  detached() {
+    this.chart = null;
+    this.series = null;
+  }
+  paneViews() {
+    return this.views;
+  }
+  /** Nearest time the series has a point at. @param {number} t */
+  snap(t) {
+    const ts = this.times;
+    let lo = 0;
+    let hi = ts.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (ts[mid] <= t) lo = mid;
+      else hi = mid;
+    }
+    return Math.abs(ts[hi] - t) < Math.abs(t - ts[lo]) ? ts[hi] : ts[lo];
+  }
+  /** Bitmap position of a point, or null when off the chart. @param {{time: number, value: number}} p @param {any} s */
+  xy(p, s) {
+    if (!this.chart || !this.series || !this.times.length) return null;
+    const x = this.chart.timeScale().timeToCoordinate(this.snap(p.time));
+    const y = this.series.priceToCoordinate(p.value);
+    return x === null || y === null ? null : { x: x * s.horizontalPixelRatio, y: y * s.verticalPixelRatio };
+  }
+  /** @param {any} target */
+  draw(target) {
+    target.useBitmapCoordinateSpace((/** @type {any} */ s) => {
+      const ctx = /** @type {CanvasRenderingContext2D} */ (s.context);
+      const r = s.horizontalPixelRatio;
+      const bg = css('--bg');
+      ctx.lineWidth = Math.max(1, Math.round(r));
+      ctx.setLineDash([2 * r, 2 * r]);
+      for (const m of this.marks) {
+        const to = this.xy(m, s);
+        const from = m.from && this.xy(m.from, s);
+        if (!to || !from) continue;
+        ctx.strokeStyle = fade(m.color, 0.5);
+        ctx.beginPath();
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+      // Buys first, so a sell at the same moment draws on top.
+      for (const m of [...this.marks].sort((a, b) => Number(a.sell) - Number(b.sell))) {
+        const p = this.xy(m, s);
+        if (!p) continue;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, (m.sell ? 3.5 : 4) * r, 0, Math.PI * 2);
+        ctx.fillStyle = m.sell ? m.color : bg;
+        ctx.fill();
+        ctx.lineWidth = 1.5 * r;
+        ctx.strokeStyle = m.sell ? bg : m.color;
+        ctx.stroke();
+        if (!m.sell) continue;
+        // A thin outer ring in the line's color keeps the dot readable where it sits on the line.
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 5 * r, 0, Math.PI * 2);
+        ctx.lineWidth = r;
+        ctx.strokeStyle = m.color;
+        ctx.stroke();
+        if (m.label) {
+          ctx.font = `${10 * r}px ${css('--mono')}`;
+          ctx.fillStyle = css('--text-secondary');
+          ctx.textBaseline = 'middle';
+          ctx.fillText(m.label, p.x + 7 * r, p.y);
+        }
+      }
+    });
+  }
+}
+
 /** Only the latest buys and sells get a mark, so the chart stays readable; hovering shows any moment's. */
 const CHART_MARKS = 12;
 /** The latest few also scroll by in the chart's corner, with tickers, like a game's kill feed. */
@@ -536,9 +640,9 @@ function balanceChart(el, lines, start, span = {}) {
   const ordered = [...lines].sort((a, b) => Number(b.dashed) - Number(a.dashed));
   const sampled = ordered.map((l) => realPoints(l));
   // Strategies with the same entries (a fast and a slow variant of one rule) can
-  // share a line until their exits differ. The one underneath draws wide and
-  // faint, so the pair shows as one line in a halo instead of one hiding.
-  const halo = new Set();
+  // share a line until their exits differ. The one on top draws in long dashes,
+  // so the line underneath shows through the gaps in its own color.
+  const onTop = new Set();
   sampled.forEach((pts, i) => {
     if (ordered[i].dashed) return;
     for (let j = i + 1; j < ordered.length; j++) {
@@ -552,41 +656,44 @@ function balanceChart(el, lines, start, span = {}) {
         moved++;
         if (Math.abs(a - b) < 0.5) same++;
       }
-      if (same >= 2 && same > moved * 0.3) halo.add(i);
+      if (same >= 2 && same > moved * 0.3) onTop.add(j);
     }
   });
   ordered.forEach((l, i) => {
     const real = sampled[i];
     const series = chart.addSeries(LWC.LineSeries, {
-      color: l.dashed ? css('--chart-random') : halo.has(i) ? fade(l.color, 0.6) : l.color,
-      lineWidth: l.dashed ? 1 : halo.has(i) ? 6 : 2,
-      lineStyle: l.dashed ? 2 : 0,
+      color: l.dashed ? css('--chart-random') : l.color,
+      lineWidth: 1,
+      lineStyle: l.dashed ? 2 : onTop.has(i) ? 3 : 0,
       priceLineVisible: false,
       lastValueVisible: !l.dashed,
       crosshairMarkerVisible: false,
       priceFormat: { type: 'custom', formatter: fmt, minMove: 0.01 },
     });
     series.setData(grid.map((sec) => ({ time: sec, value: interpolate(real, sec * 1000) })));
-    const marks = events
-      .filter((e) => e.line === l && marked.has(e))
-      .map((e) => ({
-        time: grid[gridIndex(e.t)],
-        position: e.sell ? 'aboveBar' : 'belowBar',
-        shape: e.sell ? 'arrowDown' : 'arrowUp',
-        color: l.color,
-        size: 1,
-      }))
-      .sort((a, b) => a.time - b.time);
-    if (marks.length) LWC.createSeriesMarkers(series, marks);
     drawn.push({ series, line: l, real });
   });
+  // Buys and sells sit on the line itself, at the balance at that moment.
+  /** @param {typeof events[number]} e */
+  const at = (e) => {
+    const sec = grid[gridIndex(e.t)];
+    const d = drawn.find((x) => x.line === e.line);
+    return { time: sec, value: d ? interpolate(d.real, sec * 1000) : start };
+  };
+  /** @type {TradeMark[]} */
+  const marks = [];
+  for (const e of marked) {
+    const buy = e.sell ? [...marked].find((b) => !b.sell && b.trade === e.trade) : undefined;
+    marks.push({ ...at(e), sell: e.sell, color: e.line.color, from: buy ? at(buy) : undefined });
+  }
+  drawn[drawn.length - 1].series.attachPrimitive(new TradeMarks(marks, grid));
   // Where every book started: a faint reference line at the bankroll.
   drawn[0].series.createPriceLine({ price: start, color: css('--chart-start'), lineWidth: 1, lineStyle: 1, axisLabelVisible: false, title: '' });
   chart.timeScale().fitContent();
 
   /** @param {typeof events[number]} e */
   const eventRow = (e) =>
-    `<div class="tip-row"><span class="rule-name"><span class="tip-kind" style="color:${e.line.color}">${e.sell ? '▼' : '▲'}</span><b class="sym">${esc(e.trade.symbol)}</b><span class="muted">${esc(e.line.label)}</span></span>${
+    `<div class="tip-row"><span class="rule-name"><span class="mk ${e.sell ? 'sell' : 'buy'}" style="--c:${e.line.color}"></span><b class="sym">${esc(e.trade.symbol)}</b><span class="muted">${esc(e.line.label)}</span></span>${
       e.sell ? `<b class="${tone(e.trade.pnlPct)}">${pct(e.trade.pnlPct, 0)}</b>` : '<span class="muted">buy</span>'
     }</div>`;
   const feed = document.createElement('div');
@@ -641,22 +748,24 @@ function priceChart(el, snapshots, trades) {
   const chart = baseChart(el);
   const series = chart.addSeries(LWC.LineSeries, {
     color: css('--text-primary'),
-    lineWidth: 2,
+    lineWidth: 1,
     priceFormat: { type: 'custom', formatter: price, minMove: 1e-12 },
   });
   const data = toSeries(snapshots.map((s) => ({ t: s.ts, v: s.priceUsd })));
   series.setData(data);
   const first = data.length ? data[0].time : 0;
-  const markers = [];
+  /** @type {TradeMark[]} */
+  const marks = [];
   for (const t of trades) {
-    if (!t.openedAt) continue;
+    if (!t.openedAt || t.entryPrice === null) continue;
     const color = t.strategy === 'random' ? css('--baseline') : colorOf(t.strategy);
-    const open = Math.floor(t.openedAt / 1000);
-    if (open >= first) markers.push({ time: open, position: 'belowBar', shape: 'arrowUp', color, size: 1 });
-    if (t.closedAt) markers.push({ time: Math.floor(t.closedAt / 1000), position: 'aboveBar', shape: 'arrowDown', color, size: 1, text: pct(t.pnlPct, 0) });
+    const buy = { time: Math.floor(t.openedAt / 1000), value: t.entryPrice };
+    if (buy.time >= first) marks.push({ ...buy, sell: false, color });
+    if (t.closedAt && t.exitPrice !== null) {
+      marks.push({ time: Math.floor(t.closedAt / 1000), value: t.exitPrice, sell: true, color, from: buy.time >= first ? buy : undefined, label: pct(t.pnlPct, 0) });
+    }
   }
-  markers.sort((a, b) => a.time - b.time);
-  LWC.createSeriesMarkers(series, markers);
+  series.attachPrimitive(new TradeMarks(marks, data.map((d) => d.time)));
   chart.timeScale().fitContent();
   const readout = /** @type {HTMLElement|null} */ (el.parentElement?.querySelector('.readout') ?? null);
   chart.subscribeCrosshairMove((/** @type {any} */ p) => {
@@ -1027,7 +1136,7 @@ async function coinPage(view, pool) {
       <div><div class="k">Volume 5m / 1h</div><div class="v">${usd(s.volM5)}</div><div class="s">${usd(s.volH1)} 1h</div></div>
       <div><div class="k">Buyers / sellers 5m</div><div class="v">${s.buyersM5 ?? '–'} / ${s.sellersM5 ?? '–'}</div><div class="s">${s.buysM5 ?? '–'} / ${s.sellsM5 ?? '–'} trades</div></div>
     </div>
-    <h2>Price <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· ▲ buy ▼ sell, colored by strategy, grey for random</span></h2>
+    <h2>Price <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· <span class="mk buy" style="--c:var(--text-secondary)"></span> buy <span class="mk sell" style="--c:var(--text-secondary)"></span> sell, colored by strategy, grey for random</span></h2>
     <div class="chart-box"><div class="readout"></div><div class="chart tall" id="price"></div></div>
     <h2>Trades on this coin (${filled.length})</h2>
     ${filled.length ? `<table class="t compact"><tbody>${filled.map((/** @type {any} */ t) => `<tr><td class="muted mono">${clock(t.openedAt ?? t.signalAt)}</td><td><span class="rule-name">${t.strategy === 'random' ? '<span class="dot random"></span>' : dot(t.strategy)}${esc(owner(t))}</span></td><td class="wrap">${outcome(t)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No strategy has traded this coin.</div>'}
@@ -1089,11 +1198,11 @@ function guidePage(view) {
     <p><b>The strip above the chart.</b> First your portfolio, then each strategy in its chart color, most profit first. A strategy's number is its profit so far, open trades counted as if sold now. Hover one for its rule, balance, how far it is ahead of its random picker, win rate and go-live checks. The menu bar hides at the top of the screen; move the mouse to the small handle at the top edge to bring it back.</p>
     <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
-    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. A new trade starts a few dollars down: selling it right away would cost the fee and slippage both ways, about ${p100(2 * (t.feeRate + t.slippageRate))} of the trade. When two strategies hold the same coins (a fast and a slow version of one rule), their lines match until their exits differ; the one underneath shows as a wide, faint band around the other. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
+    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. A new trade starts a few dollars down: selling it right away would cost the fee and slippage both ways, about ${p100(2 * (t.feeRate + t.slippageRate))} of the trade. When two strategies hold the same coins (a fast and a slow version of one rule), their lines match until their exits differ; the one on top is drawn in long dashes so the other shows through. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>
-    <p><b>Buys and sells.</b> The chart marks the latest buys (▲) and sells (▼) on each strategy's line, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
+    <p><b>Buys and sells.</b> The chart marks the latest buys (hollow ring) and sells (solid dot) on each strategy's line, with a faint dotted line from each sell back to its buy, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
     <p><b>Best coins.</b> Below the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
     <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not.</p>
