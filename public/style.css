@@ -283,7 +283,7 @@ details.panel[open] > summary { margin-bottom: 0; }
 .legend .line { width: 14px; height: 2px; display: inline-block; }
 .legend .line.dashed { background: none !important; border-top: 2px dashed var(--text-secondary); height: 0; }
 .overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 3; background: color-mix(in srgb, var(--bg) 55%, transparent); }
-.chart-empty { padding: 18px; }
+.empty.chart-empty { padding: 14px 18px; }
 .readout { position: absolute; top: 6px; left: 10px; z-index: 2; pointer-events: none; color: var(--text-secondary); font: 11px var(--mono); }
 
 /* ---- feed ---- */
@@ -336,7 +336,7 @@ details[open] > summary { margin-bottom: 8px; }
 .btn-link:hover { border-color: var(--text-muted); }
 table.t.trades { max-width: 760px; }
 @media (max-width: 700px) { .first-screen { min-height: calc(100vh - 16px + 6px); } }
-.chart-tip { position: absolute; top: 10px; z-index: 4; pointer-events: none; min-width: 170px; background: color-mix(in srgb, var(--surface-1) 92%, transparent); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; box-shadow: 0 8px 24px -12px #000; }
+.chart-tip { position: absolute; top: 40px; z-index: 4; pointer-events: none; min-width: 170px; background: color-mix(in srgb, var(--surface-1) 92%, transparent); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; box-shadow: 0 8px 24px -12px #000; }
 .chart-tip[hidden] { display: none; }
 .chart-tip .tip-time { color: var(--text-muted); font: 11px var(--mono); margin-bottom: 4px; }
 .chart-tip .tip-row { display: flex; justify-content: space-between; gap: 16px; padding: 1px 0; color: var(--text-secondary); }
@@ -404,3 +404,10 @@ a.tick:hover { text-decoration: none; background: color-mix(in srgb, var(--c) 10
 .hot-odds b { color: var(--text-primary); font-weight: 600; }
 .hot-more { font-size: 11px; padding: 2px 12px 4px; }
 .hot .empty { padding: 10px 12px; font-size: 12px; }
+
+/* Chart time views, top right of the chart. */
+.range-pick { position: absolute; top: 8px; right: 72px; z-index: 5; display: flex; gap: 1px; background: var(--border); border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.range-pick button { background: var(--bg); color: var(--text-muted); border: 0; padding: 3px 9px; font: 11px var(--mono); cursor: pointer; }
+.range-pick button:hover { color: var(--text-secondary); }
+.range-pick button.on { background: var(--surface-2); color: var(--text-primary); }
+.chart-box:has(.chart-empty) .range-pick { display: none; }

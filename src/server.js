@@ -6,6 +6,7 @@ import { ROOT } from './config.js';
 import { strategyResults, calibration, coinResults, priceHistory, hitRates, hotCoins, GO_LIVE } from './engine/stats.js';
 import { breakevenMove } from './engine/paper.js';
 import { RANDOM_STRATEGY } from './engine/signal-loader.js';
+import { runSettings } from './engine/runs.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 /** Changes on every start, so updated page files load fresh after a restart. */
@@ -14,6 +15,10 @@ const BOOT_ID = Date.now().toString(36);
 const CURVE_POINTS = 400;
 /** "Hot now": coins a rule fired on within this long. */
 const HOT_WINDOW_MIN = 15;
+/** Polls further apart than this mean Paper Lab wasn't collecting (asleep, off): the chart skips that time. */
+const GAP_MS = 5 * 60_000;
+/** The last hour gets a point per poll (at most every 15s), so short chart views stay detailed. */
+const RECENT_MS = 3600_000;
 const TYPES = /** @type {Record<string, string>} */ ({
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -89,8 +94,19 @@ export function createServer({ store, config, signals, strategies, provider, app
     const key = `${trades.length}:${start}:${end}`;
     const kept = pastTimelines.get(key);
     if (kept) return kept;
-    const steps = Math.min(CURVE_POINTS, Math.max(1, Math.ceil((end - start) / 15_000)));
-    const times = Array.from({ length: steps + 1 }, (_, i) => Math.round(start + ((end - start) * i) / steps));
+    // Points spread over the time Paper Lab was collecting, not over the time it was off.
+    const spans = store.activeSpans(start, end, GAP_MS);
+    if (!spans.length) spans.push([start, end]);
+    const total = spans.reduce((a, [s, e]) => a + (e - s), 0) || 1;
+    /** @type {Set<number>} */
+    const at = new Set([start, end]);
+    for (const [s, e] of spans) {
+      const k = Math.max(1, Math.round((CURVE_POINTS * (e - s)) / total));
+      for (let i = 0; i <= k; i++) at.add(Math.round(s + ((e - s) * i) / k));
+      const step = Math.max(15_000, config.pollIntervalSec * 1000);
+      for (let t = Math.max(s, end - RECENT_MS); t < e; t += step) at.add(Math.round(t));
+    }
+    const times = [...at].sort((a, b) => a - b);
     const opened = trades.filter((t) => t.openedAt !== null);
     const from = Math.min(start, ...opened.map((t) => /** @type {number} */ (t.openedAt)));
     const pools = [...new Set(opened.map((t) => t.poolAddress))];
@@ -223,7 +239,7 @@ export function createServer({ store, config, signals, strategies, provider, app
         breakevenMovePct: breakevenMove(costs),
         strategies: strategyResults({ trades, strategies: ids, startingBankroll: bankroll, latestPrice, window: { start, end }, tested: ids.length, timeline: timeline(trades, start, end) }),
         // Paper-run clock from the go-live rules: stops longer than 5 minutes don't count.
-        clock: { startedAt: start, activeMs: store.activeMs(start, end, GO_LIVE.maxGapMs), targetMs: GO_LIVE.paperRunMs },
+        clock: { startedAt: start, spans: store.activeSpans(start, end, GAP_MS), gapMs: GAP_MS, activeMs: store.activeMs(start, end, GO_LIVE.maxGapMs), targetMs: GO_LIVE.paperRunMs },
         calibration: calibration(trades),
         excluded,
       };
@@ -266,6 +282,16 @@ export function createServer({ store, config, signals, strategies, provider, app
         if (url.pathname === '/api/live/off') {
           await app?.stop();
           return send(res, 200, 'application/json', JSON.stringify({ live: false }));
+        }
+        if (url.pathname === '/api/reset') {
+          // Start over: every strategy back to its bankroll in a new run. The old
+          // run and all its trades stay, under past runs; its open trades still
+          // finish under their own exits but don't count in the new run.
+          await app?.inFlight;
+          runId = store.startRun(runSettings(config, strategies), Date.now(), 'Started over from the page.');
+          await app?.switchRun(runId);
+          for (const c of sseClients) c.write(`event: cycle\ndata: {}\n\n`);
+          return send(res, 200, 'application/json', JSON.stringify({ runId }));
         }
         if (url.pathname === '/api/quit' && onQuit) {
           send(res, 200, 'application/json', '{"quitting":true}');

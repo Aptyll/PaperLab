@@ -699,3 +699,17 @@ test('hot now: rules agreeing first, odds from trades with the same exits only',
   assert.equal(hot[2].enoughTrades, false);
   assert.ok(Math.abs((hot[0].movePct ?? 0) - 0.1) < 1e-9);
 });
+
+test('starting over opens a new run that later starts continue, and time off splits the chart', async () => {
+  const store = new Store(':memory:');
+  const strategies = await falcon();
+  const settings = runSettings(DEFAULTS, strategies);
+  const first = store.beginRun(settings, 0);
+  const fresh = store.startRun(settings, 1000, 'Started over from the page.');
+  assert.notEqual(fresh, first);
+  assert.equal(store.beginRun(settings, 2000), fresh, 'restarting the app keeps the run you started over into');
+  // Polls every minute, then the computer sleeps for an hour.
+  for (const ts of [0, 60_000, 120_000, 3720_000, 3780_000]) store.insertPoll({ ts, ok: true, calls: 1, pools: 1, error: null });
+  assert.deepEqual(store.activeSpans(0, 3800_000, 5 * 60_000), [[0, 120_000], [3720_000, 3800_000]]);
+  store.close();
+});

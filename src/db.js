@@ -548,6 +548,19 @@ export class Store {
   }
 
   /**
+   * Start a new run now, whatever the settings: "start over" from the page.
+   * The run before it stays as it is, under past runs.
+   * @param {RunSettings} settings
+   * @param {number} now
+   * @param {string} note
+   * @returns {number}
+   */
+  startRun(settings, now, note) {
+    const r = this.db.prepare("INSERT INTO runs (started_at, origin, settings, note) VALUES (?, 'live', ?, ?)").run(now, JSON.stringify(settings), note);
+    return Number(r.lastInsertRowid);
+  }
+
+  /**
    * Repair for one specific mistake: an upgrade (before this fix) filed a
    * running paper test away as a "migrated" run and started a new run seconds
    * later with the same rules. If the newest run is exactly that, fold it back
@@ -809,6 +822,29 @@ export class Store {
         .get(maxGapMs, from, to, maxGapMs)
     );
     return r?.ms ?? 0;
+  }
+
+  /**
+   * Stretches of time Paper Lab was collecting prices: polls no further apart
+   * than maxGapMs. The chart draws these and skips the time between them.
+   * A stretch still going at `to` runs to `to`.
+   * @param {number} from
+   * @param {number} to
+   * @param {number} maxGapMs
+   * @returns {[number, number][]}
+   */
+  activeSpans(from, to, maxGapMs) {
+    /** @type {[number, number][]} */
+    const spans = [];
+    for (const r of this.db.prepare('SELECT ts FROM polls WHERE ts >= ? AND ts <= ? ORDER BY ts').iterate(from, to)) {
+      const ts = Number(r.ts);
+      const last = spans[spans.length - 1];
+      if (last && ts - last[1] <= maxGapMs) last[1] = ts;
+      else spans.push([ts, ts]);
+    }
+    const last = spans[spans.length - 1];
+    if (last && to - last[1] <= maxGapMs) last[1] = to;
+    return spans;
   }
 
   /** @param {number} limit */

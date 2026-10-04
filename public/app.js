@@ -28,6 +28,7 @@ const state = {
   /** @type {ResizeObserver[]} */ observers: [],
   /** @type {number|null} Past run being viewed; null means the current run. */ viewRun: null,
   /** Coins page: list every coin bought, not just the best 15. */ allCoins: false,
+  /** Chart time view, a key of RANGES. */ range: load('range') ?? 'All',
 };
 
 /** @param {string} k */
@@ -221,6 +222,7 @@ function renderMenu() {
   const m = /** @type {HTMLElement} */ (document.getElementById('menu'));
   const live = state.status.live;
   m.innerHTML = `<button type="button" role="menuitem" data-live="${live ? 'off' : 'on'}">${live ? 'Turn off live data' : 'Turn on live data'}</button>
+    <button type="button" role="menuitem" data-reset>Start over at ${dollars(state.status.startingBankrollUsd ?? 1000)}…</button>
     <button type="button" role="menuitem" data-quit>Quit Paper Lab</button>`;
 }
 
@@ -434,7 +436,13 @@ function balanceAt(pts, t) {
 
 /** The chart's time span: from the run's start to now, or to the run's last activity for a past run. @param {any} res */
 function chartSpan(res) {
-  return { from: res.clock?.startedAt ?? null, to: state.viewRun === null ? Date.now() : shownRun()?.lastActivityAt ?? null };
+  return {
+    from: res.clock?.startedAt ?? null,
+    to: state.viewRun === null ? Date.now() : shownRun()?.lastActivityAt ?? null,
+    spans: res.clock?.spans,
+    gapMs: res.clock?.gapMs,
+    range: RANGES[state.range] ?? null,
+  };
 }
 
 /**
@@ -575,6 +583,84 @@ class TradeMarks {
   }
 }
 
+/**
+ * Where the chart skips time Paper Lab wasn't collecting: a faint dashed
+ * line with how long, e.g. "off 6.2h". And at the right edge, how long it's
+ * been off right now.
+ */
+class GapMarks {
+  /** @param {{at: number, ms: number}[]} gaps @param {number} offFor @param {number[]} grid */
+  constructor(gaps, offFor, grid) {
+    this.gaps = gaps;
+    this.offFor = offFor;
+    this.grid = grid;
+    /** @type {any} */ this.chart = null;
+    this.views = [{ zOrder: () => 'bottom', renderer: () => ({ draw: (/** @type {any} */ target) => this.draw(target) }) }];
+  }
+  /** @param {any} p */
+  attached(p) {
+    this.chart = p.chart;
+  }
+  detached() {
+    this.chart = null;
+  }
+  paneViews() {
+    return this.views;
+  }
+  /** @param {any} target */
+  draw(target) {
+    target.useBitmapCoordinateSpace((/** @type {any} */ s) => {
+      if (!this.chart) return;
+      const ctx = /** @type {CanvasRenderingContext2D} */ (s.context);
+      const r = s.horizontalPixelRatio;
+      const ts = this.chart.timeScale();
+      ctx.font = `${10 * r}px ${css('--mono')}`;
+      ctx.textBaseline = 'top';
+      const label = (/** @type {string} */ text, /** @type {number} */ x, /** @type {boolean} */ left) => {
+        const w = ctx.measureText(text).width;
+        ctx.fillStyle = css('--bg');
+        const pad = 6 * r;
+        // Kept inside the pane so a gap near either edge still reads.
+        const lx = Math.max(pad, Math.min(s.bitmapSize.width - w - pad, left ? x - w - pad : x - w / 2));
+        // Along the bottom edge, clear of the time view buttons and the corner feed.
+        const y = s.bitmapSize.height - 20 * s.verticalPixelRatio;
+        ctx.fillRect(lx - 3 * r, y - 2 * r, w + 6 * r, 14 * r);
+        ctx.fillStyle = css('--text-muted');
+        ctx.fillText(text, lx, y);
+      };
+      for (const g of this.gaps) {
+        const a = ts.timeToCoordinate(this.grid[g.at]);
+        const b = ts.timeToCoordinate(this.grid[g.at + 1]);
+        if (a === null || b === null) continue;
+        const x = Math.round(((a + b) / 2) * r) + 0.5;
+        ctx.strokeStyle = css('--chart-start');
+        ctx.lineWidth = r;
+        ctx.setLineDash([3 * r, 3 * r]);
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, s.bitmapSize.height);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        label(`off ${duration(g.ms)}`, x, false);
+      }
+      if (this.offFor) {
+        const x = ts.timeToCoordinate(this.grid[this.grid.length - 1]);
+        if (x !== null) label(`off ${duration(this.offFor)}`, x * r, true);
+      }
+    });
+  }
+}
+
+/** Chart time views: the latest stretch of collecting time of this length. null shows the whole run. */
+const RANGES = /** @type {Record<string, number|null>} */ ({ '15m': 15 * 60_000, '1h': 3600_000, '4h': 4 * 3600_000, All: null });
+
+/** The time view buttons, in the chart's top right. */
+function rangePick() {
+  return `<div class="range-pick" role="group" aria-label="Time view">${Object.keys(RANGES)
+    .map((k) => `<button type="button" data-range="${k}" class="${state.range === k ? 'on' : ''}">${k}</button>`)
+    .join('')}</div>`;
+}
+
 /** Only the latest buys and sells get a mark, so the chart stays readable; hovering shows any moment's. */
 const CHART_MARKS = 12;
 /** The latest few also scroll by in the chart's corner, with tickers, like a game's kill feed. */
@@ -588,7 +674,8 @@ const FEED_ITEMS = 5;
  * @param {HTMLElement} el
  * @param {ChartLine[]} lines
  * @param {number} start  Bankroll every book starts with.
- * @param {{from?: number|null, to?: number|null}} [span]  Run start and end, ms.
+ * @param {{from?: number|null, to?: number|null, spans?: [number, number][], gapMs?: number, range?: number|null}} [span]
+ *   Run start and end (ms), the stretches Paper Lab was collecting, and the time view.
  */
 function balanceChart(el, lines, start, span = {}) {
   const moved = (/** @type {number|undefined} */ v) => v !== undefined && Math.abs(v - start) >= 0.005;
@@ -600,14 +687,42 @@ function balanceChart(el, lines, start, span = {}) {
   const times = lines.flatMap((l) => l.curve.map((p) => p.t));
   const from = Math.min(span.from ?? Infinity, ...times, (span.to ?? Date.now()) - 60_000);
   const to = Math.max(span.to ?? -Infinity, ...times, from + 60_000);
-  const steps = Math.min(800, Math.max(2, Math.ceil((to - from) / 15_000)));
-  const stepMs = (to - from) / steps;
+  // Only time Paper Lab was collecting prices is drawn. Stretches it was off
+  // (computer asleep, app closed) are skipped and marked, not drawn as flat lines.
+  /** @type {[number, number][]} */
+  let parts = (span.spans ?? []).map(([s, e]) => /** @type {[number, number]} */ ([Math.max(s, from), Math.min(e, to)])).filter(([s, e]) => e > s);
+  if (!parts.length) parts = [[from, to]];
+  // A time view shows the latest stretch of collecting time of that length.
+  if (span.range) {
+    let keep = span.range;
+    /** @type {[number, number][]} */
+    const recent = [];
+    for (let i = parts.length - 1; i >= 0 && keep > 0; i--) {
+      const [s, e] = parts[i];
+      const s2 = Math.max(s, e - keep);
+      recent.unshift([s2, e]);
+      keep -= e - s2;
+    }
+    parts = recent;
+  }
+  const total = parts.reduce((a, [s, e]) => a + (e - s), 0);
+  const steps = Math.min(800, Math.max(2, Math.ceil(total / 15_000)));
+  const stepMs = total / steps;
   /** @type {number[]} Grid times in whole seconds, strictly increasing. */
   const grid = [];
-  for (let i = 0; i <= steps; i++) {
-    const sec = Math.floor((from + i * stepMs) / 1000);
-    if (!grid.length || sec > grid[grid.length - 1]) grid.push(sec);
-  }
+  /** @type {{at: number, ms: number}[]} Skipped stretches: after which grid point, and how long. */
+  const gaps = [];
+  parts.forEach(([s, e], i) => {
+    if (i > 0) gaps.push({ at: grid.length - 1, ms: s - parts[i - 1][1] });
+    const k = Math.max(1, Math.round((steps * (e - s)) / total));
+    for (let j = 0; j <= k; j++) {
+      const sec = Math.floor((s + ((e - s) * j) / k) / 1000);
+      if (!grid.length || sec > grid[grid.length - 1]) grid.push(sec);
+    }
+  });
+  const windowFrom = parts[0][0];
+  // Off right now (live data off, or the computer asleep): say since when.
+  const offFor = to - parts[parts.length - 1][1] > (span.gapMs ?? 5 * 60_000) ? to - parts[parts.length - 1][1] : 0;
   /** A line's points from the run start to the end, finishing at its balance now. @param {ChartLine} l */
   const realPoints = (l) => {
     const last = l.curve.length ? l.curve[l.curve.length - 1].equity : start;
@@ -620,7 +735,18 @@ function balanceChart(el, lines, start, span = {}) {
     real.push({ t: Math.max(to, end), v: real[real.length - 1].v });
     return real;
   };
-  const gridIndex = (/** @type {number} */ ms) => Math.max(0, Math.min(grid.length - 1, Math.round((ms - from) / stepMs)));
+  /** The grid point nearest a moment. @param {number} ms */
+  const gridIndex = (ms) => {
+    const sec = ms / 1000;
+    let lo = 0;
+    let hi = grid.length - 1;
+    while (hi - lo > 1) {
+      const mid = (lo + hi) >> 1;
+      if (grid[mid] <= sec) lo = mid;
+      else hi = mid;
+    }
+    return Math.abs(grid[hi] - sec) < Math.abs(sec - grid[lo]) ? hi : lo;
+  };
 
   const fmt = (/** @type {number} */ v) => dollars(v);
   const chart = baseChart(el, fmt);
@@ -642,8 +768,8 @@ function balanceChart(el, lines, start, span = {}) {
   for (const l of lines) {
     for (const t of l.trades ?? []) {
       if (t.dataFlag) continue;
-      if (t.openedAt && t.openedAt >= from) events.push({ t: t.openedAt, sell: false, line: l, trade: t });
-      if (t.closedAt && t.status === 'closed') events.push({ t: t.closedAt, sell: true, line: l, trade: t });
+      if (t.openedAt && t.openedAt >= windowFrom) events.push({ t: t.openedAt, sell: false, line: l, trade: t });
+      if (t.closedAt && t.status === 'closed' && t.closedAt >= windowFrom) events.push({ t: t.closedAt, sell: true, line: l, trade: t });
     }
   }
   events.sort((a, b) => b.t - a.t);
@@ -702,6 +828,7 @@ function balanceChart(el, lines, start, span = {}) {
     marks.push({ ...at(e), sell: e.sell, color: e.line.color, from: buy ? at(buy) : undefined });
   }
   drawn[drawn.length - 1].series.attachPrimitive(new TradeMarks(marks, grid));
+  if (gaps.length || offFor) drawn[0].series.attachPrimitive(new GapMarks(gaps, offFor, grid));
   // Where every book started: a faint reference line at the bankroll.
   drawn[0].series.createPriceLine({ price: start, color: css('--chart-start'), lineWidth: 1, lineStyle: 1, axisLabelVisible: false, title: '' });
   chart.timeScale().fitContent();
@@ -915,6 +1042,7 @@ async function scoreboardPage(view) {
       <div class="chart-row">
         <div class="chart-box fill">
           <div class="chart" id="balance"></div>
+          ${rangePick()}
           ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
         </div>
         ${coinSide(coins, hot, offNow)}
@@ -1149,7 +1277,7 @@ async function rulePage(view, id) {
     ${dataNote((res.excluded ?? []).filter((/** @type {any} */ t) => t.book === id || t.book === `random:${id}`))}
 
     ${panel('rule-checks', `Go-live checks <span class="count">${r.checks.filter((/** @type {any} */ c) => c.pass).length}/${r.checks.length}</span>`, verdictLine + checks, false)}
-    ${panel('rule-balance', `Balance <span class="key-dash" title="Dashed line: its random picker"></span>`, '<div class="chart-box"><div class="chart" id="balance"></div></div>')}
+    ${panel('rule-balance', `Balance <span class="key-dash" title="Dashed line: its random picker"></span>`, `<div class="chart-box"><div class="chart" id="balance"></div>${rangePick()}</div>`)}
     ${panel('rule-open', `Open <span class="count">${active.length}</span>`, tradeRows(active, { showWhy: true }))}
     ${panel('rule-closed', `Closed <span class="count">${closed.length}</span>`, tradeRows(closed, { showWhy: true }))}
     ${panel('rule-twin', `Random picker <span class="count">${twinFilled.length}</span>`, tradeRows(twinFilled), false)}
@@ -1311,6 +1439,7 @@ function guidePage(view) {
     <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
     <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. A new trade starts a few dollars down: selling it right away would cost the fee and slippage both ways, about ${p100(2 * (t.feeRate + t.slippageRate))} of the trade. When two strategies hold the same coins (a fast and a slow version of one rule), their lines match until their exits differ; the one on top is drawn in long dashes so the other shows through. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
+    <p><b>Time views.</b> The buttons in the chart's top corner show the last 15 minutes, hour or 4 hours, or the whole run. Paper Lab only collects prices while it's running, so time it was off (your computer asleep, the app closed) is skipped rather than drawn as a flat line: a faint dashed line marks the spot with how long it was off, like "off 6.2h". If it's off right now, the end of the chart says for how long.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>
@@ -1319,7 +1448,7 @@ function guidePage(view) {
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
     <p id="bad-prices"><b>Bad prices.</b> Now and then the price source returns a reading that can't be right, like a coin jumping 4x in a minute while its pool's liquidity doesn't move. Every reading is checked: when the price moves 2x or more, the pool's liquidity and the coin's FDV have to move with it, the way they do when people really trade. A reading that fails is kept but held back: nothing buys, sells or values a trade on it, and the coin's price chart leaves it out. Trades made on such a reading before this check existed are crossed out and left out of the results, with a note under the strip. Nothing is deleted.</p>
-    <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not.</p>
+    <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not. To start over by hand, click the dot in the menu bar and pick "Start over at ${bank}": every strategy starts a new run at an even balance, and the old run stays under Past runs. Nothing is deleted.</p>
     <h2 id="past-runs">Past runs</h2>
     <p class="muted">Click a run to see its scoreboard as it ended. "Back to now" returns to the current run.</p>
     ${runs.length ? `<table class="t compact runs-table"><tbody>${runRows}</tbody></table>` : '<div class="empty">None yet.</div>'}
@@ -1416,6 +1545,12 @@ view.addEventListener('click', (e) => {
   if (target.closest('[data-run="current"]')) return openRun(null);
   const runRow = target.closest('[data-open-run]');
   if (runRow) return openRun(Number(runRow.getAttribute('data-open-run')));
+  const range = target.closest('[data-range]');
+  if (range) {
+    state.range = String(range.getAttribute('data-range'));
+    save('range', state.range);
+    return void render();
+  }
   if (target.closest('[data-coins-all]')) {
     state.allCoins = true;
     return void render();
@@ -1436,6 +1571,24 @@ window.addEventListener('hashchange', () => {
 
 /** @param {string} url */
 const post = (url) => fetch(url, { method: 'POST', headers: { 'x-paper-lab': '1' } });
+
+/** Every strategy back to its bankroll in a new run; the current run stays under Past runs. */
+async function startOver() {
+  closeMenu();
+  const run = runsInOrder().find((r) => r.id === state.status.runId);
+  const bank = dollars(state.status.startingBankrollUsd ?? 1000);
+  const ok = confirm(
+    `Start every strategy over at ${bank}?\n\n` +
+      `Run ${run?.n ?? ''} and all its trades are kept under Past runs on the Guide. ` +
+      'Trades still open in it finish on their own but don\'t count in the new run.',
+  );
+  if (!ok) return;
+  await post('/api/reset').catch(() => {});
+  state.viewRun = null;
+  state.results = null;
+  location.hash = '#/';
+  await refresh();
+}
 
 /** @param {HTMLButtonElement} b */
 async function setLive(b) {
@@ -1466,6 +1619,7 @@ menu.addEventListener('click', (e) => {
   const b = /** @type {HTMLElement} */ (e.target).closest('button');
   if (!b) return;
   if (b.hasAttribute('data-quit')) return void quit();
+  if (b.hasAttribute('data-reset')) return void startOver();
   void setLive(/** @type {HTMLButtonElement} */ (b));
 });
 

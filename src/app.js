@@ -33,6 +33,15 @@ export class App extends EventEmitter {
     this.inFlight = Promise.resolve();
   }
 
+  /**
+   * Trade into a different run from the next poll on, once any poll under way has finished writing.
+   * @param {number} runId
+   */
+  async switchRun(runId) {
+    await this.inFlight;
+    this.deps.runId = runId;
+  }
+
   /** Turn live data on: poll now, then on the usual interval. */
   start() {
     if (this.running) return;
