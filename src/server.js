@@ -8,6 +8,8 @@ import { breakevenMove } from './engine/paper.js';
 import { RANDOM_STRATEGY } from './engine/signal-loader.js';
 import { runSettings } from './engine/runs.js';
 import { OFF_GAP_MS } from './db.js';
+import { readNotes } from './notes.js';
+import { readTurnover, replayTurnover, TURNOVER } from './engine/turnover.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 /** Changes on every start, so updated page files load fresh after a restart. */
@@ -117,6 +119,9 @@ export function createServer({ store, config, signals, strategies, provider, app
     return made;
   };
 
+  /** @type {{at: number, rows: import('./engine/turnover.js').ReplayRow[]}|null} */
+  let replay = null;
+
   /** @param {URLSearchParams} q */
   const runOf = (q) => {
     const r = Number(q.get('run'));
@@ -138,6 +143,7 @@ export function createServer({ store, config, signals, strategies, provider, app
         trade: config.trade,
         breakevenMovePct: breakevenMove(config.trade),
         universe: config.universe,
+        turnover: TURNOVER,
         ai: { enabled: aiEnabled, model: aiEnabled ? config.ai.model : null },
         callsInLastMinute: provider.callsInLastMinute(),
         lastCycle: app?.lastCycle ?? null,
@@ -162,6 +168,7 @@ export function createServer({ store, config, signals, strategies, provider, app
         .map((s) => ({
           ...s,
           trendingRank: s.trendingRank !== null && s.ts >= newest - 1000 ? s.trendingRank : null,
+          turnover: readTurnover(s),
           openStrategies: open.filter((t) => t.poolAddress === s.poolAddress).map((t) => t.strategy),
         }))
         .sort((a, b) => (a.trendingRank ?? 1e9) - (b.trendingRank ?? 1e9));
@@ -169,13 +176,21 @@ export function createServer({ store, config, signals, strategies, provider, app
     let m = pathname.match(/^\/api\/pools\/([^/]+)$/);
     if (m) {
       const pool = decodeURIComponent(m[1]);
+      const snapshots = store.poolHistory(pool, { limit: 3000 });
       return {
-        snapshots: store.poolHistory(pool, { limit: 3000 }),
+        snapshots,
+        turnover: snapshots.map((s) => ({ ts: s.ts, ...readTurnover(s) })),
         trades: store.trades({ poolAddress: pool, runId: runOf(q), limit: 500 }),
         heldBack: store.flaggedReadings([pool]),
       };
     }
     if (pathname === '/api/signals') return signalMeta;
+    if (pathname === '/api/notes') return readNotes();
+    if (pathname === '/api/turnover-replay') {
+      // Reads every saved reading, so it is worked out at most every 5 minutes.
+      if (!replay || Date.now() - replay.at > 5 * 60_000) replay = { at: Date.now(), rows: replayTurnover((each) => store.eachPoolSnapshots(each)) };
+      return { settings: TURNOVER, rows: replay.rows };
+    }
     m = pathname.match(/^\/api\/strategies\/([a-z0-9-]+)$/);
     if (m) {
       const id = m[1];

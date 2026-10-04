@@ -780,3 +780,61 @@ test('a trade open while Paper Lab was off is left out; trades after it count', 
   assert.equal(store.trades({ book }).find((t) => t.id === gone.id)?.dataFlag, null);
   store.close();
 });
+
+test('notes: dated files newest first, title from the first heading, README skipped', async () => {
+  const { readNotes } = await import('../src/notes.js');
+  const { writeFileSync } = await import('node:fs');
+  const dir = mkdtempSync(path.join(tmpdir(), 'notes-'));
+  writeFileSync(path.join(dir, 'README.md'), '# Notebook');
+  writeFileSync(path.join(dir, '2026-10-01-older.md'), '# Older idea\r\n\r\nBody one.');
+  writeFileSync(path.join(dir, '2026-10-04-newer-thing.md'), 'No heading here.');
+  const notes = readNotes(dir);
+  assert.deepEqual(notes.map((n) => n.id), ['2026-10-04-newer-thing', '2026-10-01-older']);
+  assert.equal(notes[1].title, 'Older idea');
+  assert.equal(notes[1].body, 'Body one.');
+  assert.equal(notes[0].title, 'newer thing');
+  assert.deepEqual(readNotes(path.join(dir, 'missing')), []);
+  // The notebook in the repo reads cleanly.
+  assert.ok(readNotes().length >= 1);
+});
+
+test('turnover labels follow volume to market cap, pace and price', async () => {
+  const { readTurnover, labelOf } = await import('../src/engine/turnover.js');
+  const hour = 3600_000;
+  // 50% of cap traded in the last hour, at 2x the 6h pace, price +20%: attention.
+  const r = readTurnover(snap({ ts: 10 * hour, marketCapUsd: 100_000, volH1: 50_000, volH6: 150_000, priceChangeH1: 20, poolCreatedAt: 0 }));
+  assert.equal(r.turnover, 0.5);
+  assert.equal(r.pace, 2);
+  assert.equal(r.label, 'attention');
+  assert.equal(labelOf(0.5, 1.5, -0.02), 'distribution');
+  assert.equal(labelOf(0.5, 0.5, 0.01), 'fading');
+  assert.equal(labelOf(0.5, 0.5, -0.2), 'distribution');
+  assert.equal(labelOf(0.1, 1.5, 0.2), null, 'low turnover is no signal');
+  assert.equal(labelOf(0.1, 0.5, 0), 'fading', 'fading needs no minimum turnover');
+  // A 2-hour-old pool: its 6h volume covers 2 hours.
+  assert.equal(readTurnover(snap({ ts: 2 * hour, volH1: 10_000, volH6: 10_000, poolCreatedAt: 0, priceChangeH1: 0 })).pace, 2);
+  // Too young for a pace, or no hourly price change: no label.
+  assert.equal(readTurnover(snap({ ts: hour / 2, volH6: 12_000, poolCreatedAt: 0, priceChangeH1: 0 })).label, null);
+  assert.equal(readTurnover(snap({ volH6: 72_000, priceChangeH1: null })).label, null);
+});
+
+test('turnover replay: price an hour later, each coin counted once per label per 30 minutes', async () => {
+  const { replayTurnover } = await import('../src/engine/turnover.js');
+  const min = 60_000;
+  // One coin read every minute for 2 hours, labelled attention throughout, price climbing.
+  /** @type {import("../src/types.js").Snapshot[]} */
+  const rows = [];
+  for (let i = 0; i <= 120; i++)
+    rows.push(snap({ ts: 600 * min + i * min, priceUsd: 1 + i / 100, marketCapUsd: 100_000, volH1: 50_000, volH6: 150_000, priceChangeH1: 20, poolCreatedAt: 0 }));
+  const out = replayTurnover((each) => each('POOL1', rows));
+  const att = /** @type {any} */ (out.find((r) => r.label === 'attention'));
+  // Readings at minutes 0, 30 and 60 have a price 60 minutes later; later ones don't.
+  assert.equal(att.readings, 3);
+  assert.equal(att.coins, 1);
+  assert.equal(att.up, 3);
+  assert.ok(Math.abs(att.medianMove - (1.9 / 1.3 - 1)) < 1e-9);
+  assert.equal(out.find((r) => r.label === 'fading')?.readings, 0);
+  // A gap with no reading near the hour mark is skipped, not matched to a far later price.
+  const gappy = [rows[0], snap({ ...rows[0], ts: rows[0].ts + 200 * min, priceUsd: 5 })];
+  assert.equal(replayTurnover((each) => each('P', gappy)).find((r) => r.label === 'all')?.readings, 0);
+});
