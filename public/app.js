@@ -22,7 +22,6 @@ const state = {
   /** @type {any} */ status: null,
   /** @type {Record<string, string>} */ colors: {},
   /** @type {any[]} */ charts: [],
-  showTwinsInFeed: load('showTwinsInFeed') === '1',
   /** @type {number|null} Past run being viewed; null means the current run. */ viewRun: null,
 };
 
@@ -112,6 +111,9 @@ const dot = (id) => `<span class="dot" style="background:${colorOf(id)}"></span>
 /** Add the viewed run to an API url. @param {string} url */
 const forRun = (url) => (state.viewRun === null ? url : `${url}${url.includes('?') ? '&' : '?'}run=${state.viewRun}`);
 
+/** Market cap, or fully diluted value when the source has none. 0 means "no figure". @param {any} s */
+const capOf = (s) => (s.marketCapUsd > 0 ? s.marketCapUsd : s.fdvUsd > 0 ? s.fdvUsd : null);
+
 /** @param {string} url */
 async function getJson(url) {
   const r = await fetch(url);
@@ -126,14 +128,16 @@ function renderTopbar() {
   const lastOk = s.recentPolls.find((/** @type {any} */ p) => p.ok)?.ts ?? null;
   const ageSec = lastOk ? Math.round((Date.now() - lastOk) / 1000) : null;
   const healthy = ageSec !== null && ageSec < 180;
-  const source = s.demo ? 'Demo data' : 'Live data';
-  const when = ageSec === null ? 'waiting for first update' : `updated ${ageSec < 120 ? `${ageSec}s` : `${Math.round(ageSec / 60)}m`} ago`;
-  const tip = healthy
-    ? `Prices refresh every ${s.pollIntervalSec}s. ${s.ai.enabled ? `AI scoring on (${s.ai.model}).` : 'AI scoring off.'}`
-    : 'No fresh prices for 3+ minutes. New trades pause until data comes back.';
+  const when = ageSec === null ? 'waiting' : ageSec < 120 ? `${ageSec}s` : `${Math.round(ageSec / 60)}m`;
+  const tip = [
+    `${s.demo ? 'Demo' : 'Live'} data, last price update ${ageSec === null ? 'not yet' : `${when} ago`}.`,
+    healthy ? `Prices refresh every ${s.pollIntervalSec}s.` : 'No fresh prices for 3+ minutes. New trades pause until data comes back.',
+    s.ai.enabled ? `AI scoring on (${s.ai.model}).` : '',
+  ].join(' ');
   const el = /** @type {HTMLElement} */ (document.getElementById('health'));
   el.title = tip;
-  el.innerHTML = `<span class="health ${healthy ? 'ok' : 'bad'}"></span>${source} · ${when}${s.lastCycle && !s.lastCycle.ok ? ' · <span class="neg">last update failed</span>' : ''}`;
+  const failed = s.lastCycle && !s.lastCycle.ok;
+  el.innerHTML = `${s.demo ? '<span class="badge-demo">DEMO</span>' : ''}<span class="health ${healthy && !failed ? 'ok' : 'bad'}"></span><span class="${healthy ? 'muted' : 'neg'}">${when}</span>`;
   renderRunPicker();
   for (const a of document.querySelectorAll('.nav a')) {
     const r = route();
@@ -337,14 +341,97 @@ const VERDICT_TEXT = /** @type {Record<string, string>} */ ({
   clear: 'Clear',
 });
 
-/** @param {any} r  strategy result row */
-function verdictPill(r) {
+// The HUD reads top to bottom by importance: how far each rule is ahead of
+// random (largest, brightest), the six go-live checks (pips), progress toward
+// enough trades (thin bar), then everything else, quieter or folded away.
+
+/** Profit minus its random twin's profit, closed trades. @param {any} r */
+const edgeUsd = (r) => r.all.pnlUsd - r.twin.all.pnlUsd;
+
+/** Verdict word, only once there are enough trades for it to mean something. @param {any} r */
+function verdictTag(r) {
   const v = r.verdict;
-  const bar =
-    v.label === 'too_early'
-      ? `<span class="progress" title="${r.all.closed} of 30 closed trades"><span style="width:${Math.min(100, (r.all.closed / 30) * 100)}%"></span></span>`
-      : '';
-  return `<span class="verdict ${v.label}" title="${esc(v.detail)}">${VERDICT_TEXT[v.label]}</span>${bar}`;
+  if (!v || v.label === 'too_early') return '';
+  return `<span class="tag ${v.label}" title="${esc(v.detail)}">${VERDICT_TEXT[v.label]}</span>`;
+}
+
+/** The six go-live checks as pips; hover lists them. @param {any} r */
+function pips(r) {
+  const c = r.checks ?? [];
+  const passed = c.filter((/** @type {any} */ x) => x.pass).length;
+  const tip = ['Go-live checks', ...c.map((/** @type {any} */ x) => `${x.pass ? '✓' : '✗'} ${x.label} (${x.detail})`)].join('\n');
+  return `<span class="pips" title="${esc(tip)}">${c.map((/** @type {any} */ x) => `<i class="${x.pass ? 'on' : ''}"></i>`).join('')}<b>${passed}/${c.length}</b></span>`;
+}
+
+/** Progress toward the closed trades a verdict needs, like an XP bar. @param {any} r */
+function xpBar(r) {
+  const need = 30;
+  const p = Math.min(1, r.all.closed / need);
+  return `<div class="xp ${p >= 1 ? 'full' : ''}" title="${r.all.closed} of ${need} closed trades"><span style="width:${(p * 100).toFixed(1)}%"></span></div>`;
+}
+
+/** Big number: how far ahead of random. @param {any} r */
+function heroNumber(r) {
+  const e = edgeUsd(r);
+  const none = r.all.closed === 0 && r.twin.all.closed === 0;
+  return `<div class="hero ${none ? 'muted' : tone(e)}" title="Profit minus its random twin's profit (closed trades)">${none ? '$0' : money(e)}<span class="hero-unit">vs random</span></div>`;
+}
+
+/** @param {any} r @param {boolean} lead */
+function ruleCard(r, lead) {
+  const open = r.open + r.pending;
+  const bits = [r.all.closed ? `${share(r.all.winRate)} win` : '', `${r.all.closed} closed`, open ? `${open} open` : ''].filter(Boolean);
+  return `<a class="card ${lead ? 'lead' : ''}" href="#/rule/${esc(r.strategy)}" style="--c:${colorOf(r.strategy)}">
+    <div class="card-top"><span class="rule-name">${dot(r.strategy)}${esc(ruleName(r.strategy))}</span>${verdictTag(r)}</div>
+    ${heroNumber(r)}
+    <div class="card-row">${pips(r)}<span class="card-sub">${bits.join(' · ')}</span></div>
+    ${xpBar(r)}
+  </a>`;
+}
+
+/** The rule closest to going live: most checks passed, then furthest ahead. @param {any[]} rules */
+function leaderOf(rules) {
+  const score = (/** @type {any} */ r) => (r.checks ?? []).filter((/** @type {any} */ c) => c.pass).length * 1e6 + edgeUsd(r);
+  const withTrades = rules.filter((r) => r.all.closed > 0);
+  return withTrades.length ? withTrades.reduce((a, b) => (score(b) > score(a) ? b : a)).strategy : null;
+}
+
+const hm = (/** @type {number} */ ms) => `${Math.floor(ms / 3600_000)}:${String(Math.floor(ms / 60_000) % 60).padStart(2, '0')}`;
+
+/** Paper-run clock toward the 3 hours the go-live rules ask for. @param {any} c */
+function clockBar(c) {
+  const { trade: t, universe } = shownRules();
+  const p = Math.min(1, c.activeMs / c.targetMs);
+  const tip = [
+    `Paper run time: ${hm(c.activeMs)} of ${hm(c.targetMs)}. Stops longer than 5 minutes don't count. Changing a setting starts a new run.`,
+    `Every rule and its random twin: $${t.sizeUsd} trades, sell at −${+(t.stopLossPct * 100).toFixed(2)}% or +${+(t.takeProfitPct * 100).toFixed(2)}% or after ${t.timeLimitMin} min${universe ? `, coins with $${Math.round(universe.minLiquidityUsd / 1000)}K+ liquidity` : ''}.`,
+  ].join('\n');
+  return `<div class="clock ${p >= 1 ? 'done' : ''}" title="${esc(tip)}"><span class="clock-t">${hm(c.activeMs)}<span class="muted"> / ${hm(c.targetMs)}</span></span><div class="clock-bar"><span style="width:${(p * 100).toFixed(1)}%"></span></div></div>`;
+}
+
+/**
+ * Collapsible panel that remembers whether it was open.
+ * @param {string} key @param {string} title @param {string} body @param {boolean} [openByDefault]
+ */
+function panel(key, title, body, openByDefault = true) {
+  const v = load(`panel:${key}`);
+  const open = v === null ? openByDefault : v === '1';
+  return `<details class="panel" data-panel="${esc(key)}" data-open="${open ? 1 : 0}" ${open ? 'open' : ''}><summary>${title}</summary><div class="panel-body">${body}</div></details>`;
+}
+
+/** Open positions, best first. @param {any[]} trades */
+function positions(trades) {
+  const open = trades.filter((t) => t.status === 'open' || t.status === 'pending').sort((a, b) => (b.markPct ?? -1e9) - (a.markPct ?? -1e9));
+  if (!open.length) return `<div class="empty">Nothing open.</div>`;
+  return `<table class="t compact pos-list"><tbody>${open
+    .map(
+      (t) => `<tr class="link" data-href="#/coin/${encodeURIComponent(t.poolAddress)}">
+        <td><span class="rule-name">${dot(t.strategy === 'random' ? String(t.book).split(':')[1] : t.strategy)}<b>${esc(t.symbol)}</b></span></td>
+        <td class="num big ${tone(t.markPct)}">${t.status === 'pending' ? '<span class="muted">buying</span>' : pct(t.markPct)}</td>
+        <td class="num muted">${t.openedAt ? duration(Date.now() - t.openedAt) : ''}</td>
+      </tr>`,
+    )
+    .join('')}</tbody></table>`;
 }
 
 /** One-line plain explanation of how a trade ended (or where it stands). @param {any} t */
@@ -387,44 +474,19 @@ function tradeRows(trades, opts = {}) {
 /** @param {HTMLElement} view */
 async function scoreboardPage(view) {
   const [res, trades] = await Promise.all([getJson(forRun('/api/results')), getJson(forRun('/api/trades?limit=300'))]);
-  const { trade: t, universe } = shownRules();
   const rules = res.strategies.filter((/** @type {any} */ r) => r.strategy !== 'random');
-  const rows = rules
-    .map((/** @type {any} */ r) => {
-      const tw = r.twin;
-      return `<tr class="link" data-href="#/rule/${esc(r.strategy)}">
-        <td><span class="rule-name">${dot(r.strategy)}${esc(ruleName(r.strategy))}</span></td>
-        <td>${verdictPill(r)}</td>
-        <td class="num">${r.all.closed}<span class="vs">${r.open + r.pending ? `+${r.open + r.pending} open` : ''}</span></td>
-        <td class="num">${share(r.all.winRate)}<span class="vs">${share(tw.all.winRate)}</span></td>
-        <td class="num"><span class="${tone(r.all.pnlUsd)}">${money(r.all.pnlUsd)}</span><span class="vs">${money(tw.all.pnlUsd)}</span></td>
-        <td class="num ${tone(r.verdict.edgePct)}">${r.verdict.edgePct === null ? '–' : pct(r.verdict.edgePct)}</td>
-      </tr>`;
-    })
-    .join('');
+  const lead = leaderOf(rules);
+  const mine = trades.filter((/** @type {any} */ t) => t.strategy !== 'random');
+  const openCount = mine.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending').length;
 
   view.innerHTML = `<div class="page">
     ${pastRunBanner()}
-    <div class="page-head"><h1>Is any rule beating random?</h1></div>
-    <p class="sub">Every rule has a random twin that buys a random coin at the same moment, with the same rules: $${t.sizeUsd} per trade · sell at −${+(t.stopLossPct * 100).toFixed(2)}% or +${+(t.takeProfitPct * 100).toFixed(2)}% or after ${t.timeLimitMin} min${universe ? ` · coins with $${Math.round(universe.minLiquidityUsd / 1000)}K+ liquidity` : ''}.</p>
-    <div class="scroll-x"><table class="t board"><thead><tr>
-      <th>Rule</th><th>Verdict</th><th class="num">Trades</th>
-      <th class="num">Win rate <span class="vs">twin</span></th><th class="num">Profit <span class="vs">twin</span></th>
-      <th class="num" title="Average result per trade, minus the twin's">Edge / trade</th>
-    </tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="legend-note"><b>Too early</b> under 30 closed trades · <b>No edge</b> not beating its twin · <b>Leaning</b> ahead, but could be luck · <b>Clear</b> ahead by more than luck explains</p>
-
+    ${clockBar(res.clock)}
+    <div class="cards">${rules.map((/** @type {any} */ r) => ruleCard(r, r.strategy === lead)).join('')}</div>
+    ${panel('balance', `Balance <span class="key-dash" title="Dashed lines are each rule's random twin"></span>`, '<div class="chart-box"><div class="chart" id="balance"></div></div>')}
     <div class="split">
-      <section>
-        <h2>Balance</h2>
-        <div class="legend">${rules.map((/** @type {any} */ r) => `<span class="key"><span class="line" style="background:${colorOf(r.strategy)}"></span>${esc(ruleName(r.strategy))}</span>`).join('')}
-          <span class="key"><span class="line dashed"></span>twin</span></div>
-        <div class="chart-box"><div class="chart" id="balance"></div></div>
-      </section>
-      <section>
-        <h2>Activity <label class="toggle"><input type="checkbox" id="twins" ${state.showTwinsInFeed ? 'checked' : ''}> show twins</label></h2>
-        ${feed(trades)}
-      </section>
+      ${panel('positions', `Open <span class="count">${openCount}</span>`, positions(mine))}
+      ${panel('activity', 'Activity', feed(mine), false)}
     </div>
     ${calibrationBlock(res.calibration)}
   </div>`;
@@ -435,12 +497,8 @@ async function scoreboardPage(view) {
     lines.push({ id: r.strategy, curve: r.equityCurve, dashed: false });
     lines.push({ id: r.strategy, curve: r.twin.equityCurve, dashed: true });
   }
-  balanceChart(/** @type {HTMLElement} */ (document.getElementById('balance')), lines, res.startingBankrollUsd);
-  document.getElementById('twins')?.addEventListener('change', (e) => {
-    state.showTwinsInFeed = /** @type {HTMLInputElement} */ (e.target).checked;
-    save('showTwinsInFeed', state.showTwinsInFeed ? '1' : '0');
-    void render();
-  });
+  const el = document.getElementById('balance');
+  if (el && el.offsetWidth) balanceChart(el, lines, res.startingBankrollUsd);
 }
 
 /** Recent buys and sells, newest first. @param {any[]} trades */
@@ -448,7 +506,6 @@ function feed(trades) {
   /** @type {{t: number, html: string}[]} */
   const items = [];
   for (const t of trades) {
-    if (t.strategy === 'random' && !state.showTwinsInFeed) continue;
     const who = `<span class="rule-name">${dot(t.strategy === 'random' ? String(t.book).split(':')[1] : t.strategy)}${esc(owner(t))}</span>`;
     const coin = `<b>${esc(t.symbol)}</b>`;
     if (t.openedAt) items.push({ t: t.openedAt, html: `<td class="kind pos">BUY</td><td>${coin} <span class="muted">·</span> ${who}</td>` });
@@ -496,35 +553,42 @@ async function rulePage(view, id) {
   const active = trades.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending');
   const closed = trades.filter((/** @type {any} */ t) => t.status === 'closed');
   const skipped = trades.filter((/** @type {any} */ t) => t.status === 'cancelled');
-  const ci = r.all.winRateCi ? `could be ${share(r.all.winRateCi[0])}–${share(r.all.winRateCi[1])}` : 'no trades yet';
-  const params = Object.entries(meta.params).map(([k, v]) => `${esc(k)} ${esc(v)}`).join(' · ');
+  const ci = r.all.winRateCi ? `could be ${share(r.all.winRateCi[0])}–${share(r.all.winRateCi[1])}` : 'none closed yet';
+  const params = Object.entries(meta.params).map(([k, v]) => `${k} ${v}`).join(' · ');
+  const checks = `<table class="t compact checks"><tbody>${r.checks
+    .map((/** @type {any} */ c) => `<tr><td class="${c.pass ? 'pos' : 'muted'}">${c.pass ? '✓' : '✗'}</td><td>${esc(c.label)}</td><td class="num muted">${esc(c.detail)}</td></tr>`)
+    .join('')}</tbody></table>`;
+  const twinFilled = twinTrades.filter((/** @type {any} */ t) => t.status !== 'cancelled');
 
   view.innerHTML = `<div class="page">
     ${pastRunBanner()}
     <a class="back" href="#/">← Scoreboard</a>
-    <div class="page-head"><h1 class="rule-name">${dot(id)}${esc(meta.name)}</h1>${verdictPill(r)}</div>
-    <p class="sub">${esc(meta.description)} <span title="Settings">(${params})</span></p>
-
-    <div class="strip">
-      <div><div class="k">Balance</div><div class="v">$${r.equityUsd.toFixed(2)}</div><div class="s">twin $${tw.equityUsd.toFixed(2)}</div></div>
-      <div><div class="k">Profit, closed</div><div class="v ${tone(r.all.pnlUsd)}">${money(r.all.pnlUsd)}</div><div class="s">${money(r.unrealizedPnlUsd)} open</div></div>
-      <div><div class="k">Win rate</div><div class="v">${share(r.all.winRate)}</div><div class="s">${ci}</div></div>
-      <div><div class="k">Avg per trade</div><div class="v ${tone(r.all.avgPnlPct)}">${pct(r.all.avgPnlPct)}</div><div class="s">twin ${pct(tw.all.avgPnlPct)}</div></div>
-      <div><div class="k">Trades</div><div class="v">${r.all.closed}</div><div class="s">${active.length} open · ${skipped.length} skipped</div></div>
+    <div class="rule-hero" style="--c:${colorOf(id)}">
+      <div>
+        <div class="card-top"><h1 class="rule-name" title="${esc(meta.description)}${params ? `\n${esc(params)}` : ''}">${dot(id)}${esc(meta.name)}</h1>${verdictTag(r)}</div>
+        ${heroNumber(r)}
+        <div class="card-row">${pips(r)}</div>
+      </div>
+      <div class="strip">
+        <div><div class="k">Balance</div><div class="v">$${r.equityUsd.toFixed(0)}</div><div class="s">twin $${tw.equityUsd.toFixed(0)}</div></div>
+        <div><div class="k">Win rate</div><div class="v">${share(r.all.winRate)}</div><div class="s">${ci}</div></div>
+        <div><div class="k">Avg trade</div><div class="v ${tone(r.all.avgPnlPct)}">${pct(r.all.avgPnlPct)}</div><div class="s">twin ${pct(tw.all.avgPnlPct)}</div></div>
+        <div><div class="k">Closed</div><div class="v">${r.all.closed}</div><div class="s">${active.length} open · ${skipped.length} skipped</div></div>
+      </div>
+      ${xpBar(r)}
     </div>
 
-    <h2>Balance vs twin</h2>
-    <div class="chart-box"><div class="chart" id="balance"></div></div>
-
-    <h2>Open (${active.length})</h2>${tradeRows(active, { showWhy: true })}
-    <h2>Closed (${closed.length})</h2>${tradeRows(closed, { showWhy: true })}
-
-    <details><summary>Random twin trades (${twinTrades.filter((/** @type {any} */ t) => t.status !== 'cancelled').length})</summary>${tradeRows(twinTrades.filter((/** @type {any} */ t) => t.status !== 'cancelled'))}</details>
-    <details><summary>Skipped trades (${skipped.length})</summary>${tradeRows(skipped, { showWhy: true })}</details>
-    <details><summary>Every time this rule fired (${events.length})</summary>${firesTable(events)}</details>
+    ${panel('rule-checks', `Go-live checks <span class="count">${r.checks.filter((/** @type {any} */ c) => c.pass).length}/6</span>`, checks, false)}
+    ${panel('rule-balance', `Balance <span class="key-dash" title="Dashed line is the random twin"></span>`, '<div class="chart-box"><div class="chart" id="balance"></div></div>')}
+    ${panel('rule-open', `Open <span class="count">${active.length}</span>`, tradeRows(active, { showWhy: true }))}
+    ${panel('rule-closed', `Closed <span class="count">${closed.length}</span>`, tradeRows(closed, { showWhy: true }))}
+    ${panel('rule-twin', `Random twin <span class="count">${twinFilled.length}</span>`, tradeRows(twinFilled), false)}
+    ${panel('rule-skipped', `Skipped <span class="count">${skipped.length}</span>`, tradeRows(skipped, { showWhy: true }), false)}
+    ${panel('rule-fires', `Every fire <span class="count">${events.length}</span>`, firesTable(events), false)}
   </div>`;
-  balanceChart(
-    /** @type {HTMLElement} */ (document.getElementById('balance')),
+  const el = document.getElementById('balance');
+  if (el && el.offsetWidth) balanceChart(
+    el,
     [
       { id, curve: r.equityCurve, dashed: false },
       { id, curve: tw.equityCurve, dashed: true },
@@ -565,7 +629,7 @@ async function coinsPage(view) {
         <td class="num">${price(t.priceUsd)}</td>
         ${hasChange ? `<td class="num ${tone(t.priceChangeM5)}">${t.priceChangeM5 === null ? '–' : pct(t.priceChangeM5 / 100)}</td>` : ''}
         <td class="num">${usd(t.liquidityUsd)}</td>
-        <td class="num ${t.marketCapUsd === null ? 'italic' : ''}">${usd(t.marketCapUsd ?? t.fdvUsd)}</td>
+        <td class="num ${t.marketCapUsd > 0 ? '' : 'italic'}">${usd(capOf(t))}</td>
         <td class="num">${usd(t.volH1)}</td>
         <td class="num">${r === null ? '–' : r.toFixed(1)}</td>
         <td class="num muted">${ago(t.poolCreatedAt)}</td>
@@ -591,7 +655,7 @@ async function coinPage(view, pool) {
     view.innerHTML = `<div class="page"><a class="back" href="#/coins">← Coins</a><div class="empty">No data for this coin.</div></div>`;
     return;
   }
-  const cap = s.marketCapUsd ?? s.fdvUsd;
+  const cap = capOf(s);
   const filled = trades.filter((/** @type {any} */ t) => t.status !== 'cancelled');
   view.innerHTML = `<div class="page">
     ${pastRunBanner()}
@@ -601,7 +665,7 @@ async function coinPage(view, pool) {
     <div class="strip">
       <div><div class="k">Price</div><div class="v">${price(s.priceUsd)}</div><div class="s">${s.priceChangeM5 === null ? '' : `${pct(s.priceChangeM5 / 100)} 5m`}</div></div>
       <div><div class="k">Liquidity</div><div class="v">${usd(s.liquidityUsd)}</div><div class="s">${cap ? `${Math.round((s.liquidityUsd / cap) * 100)}% of cap` : ''}</div></div>
-      <div><div class="k">${s.marketCapUsd === null ? 'FDV' : 'Market cap'}</div><div class="v">${usd(cap)}</div><div class="s">age ${ago(s.poolCreatedAt)}</div></div>
+      <div><div class="k">${s.marketCapUsd > 0 ? 'Market cap' : 'FDV'}</div><div class="v">${usd(cap)}</div><div class="s">age ${ago(s.poolCreatedAt)}</div></div>
       <div><div class="k">Volume 5m / 1h</div><div class="v">${usd(s.volM5)}</div><div class="s">${usd(s.volH1)} 1h</div></div>
       <div><div class="k">Buyers / sellers 5m</div><div class="v">${s.buyersM5 ?? '–'} / ${s.sellersM5 ?? '–'}</div><div class="s">${s.buysM5 ?? '–'} / ${s.sellsM5 ?? '–'} trades</div></div>
     </div>
@@ -671,6 +735,20 @@ document.getElementById('run-pick')?.addEventListener('change', (e) => {
   if (route().page === 'coins') location.hash = '#/';
   void render();
 });
+
+document.getElementById('view')?.addEventListener(
+  'toggle',
+  (e) => {
+    const d = /** @type {HTMLDetailsElement} */ (e.target);
+    const key = d.getAttribute?.('data-panel');
+    // Browsers also fire "toggle" when a panel is first drawn open; only react to real changes.
+    if (!key || d.dataset.open === (d.open ? '1' : '0')) return;
+    d.dataset.open = d.open ? '1' : '0';
+    save(`panel:${key}`, d.dataset.open);
+    if (d.open && d.querySelector('.chart')) void render();
+  },
+  true,
+);
 
 document.getElementById('view')?.addEventListener('click', (e) => {
   if (/** @type {HTMLElement} */ (e.target).closest('[data-run="current"]')) {

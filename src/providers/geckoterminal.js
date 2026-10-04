@@ -10,6 +10,9 @@ const BASE = 'https://api.geckoterminal.com/api/v2';
 const NETWORK = 'solana';
 const MULTI_MAX = 30; // the multi-pool endpoint takes up to 30 addresses
 
+/** @param {number|null} x */
+const positive = (x) => (x !== null && x > 0 ? x : null);
+
 /**
  * Turn one JSON:API pool object into a Snapshot. Defensive about missing
  * fields because the API is labeled beta and new pools often lack data.
@@ -46,8 +49,9 @@ export function normalizePool(pool, tokens, ts, trendingRank) {
     dex: pool?.relationships?.dex?.data?.id ?? null,
     trendingRank,
     priceUsd: price,
-    marketCapUsd: num(a.market_cap_usd),
-    fdvUsd: num(a.fdv_usd),
+    // The API sends 0 or nothing when it has no figure; 0 is never a real market cap.
+    marketCapUsd: positive(num(a.market_cap_usd)),
+    fdvUsd: positive(num(a.fdv_usd)),
     liquidityUsd: num(a.reserve_in_usd),
     volM5: num(vol.m5),
     volH1: num(vol.h1),

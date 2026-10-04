@@ -3,7 +3,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ROOT } from './config.js';
-import { strategyResults, calibration } from './engine/stats.js';
+import { strategyResults, calibration, GO_LIVE } from './engine/stats.js';
 import { breakevenMove } from './engine/paper.js';
 import { RANDOM_STRATEGY } from './engine/signal-loader.js';
 
@@ -140,7 +140,10 @@ export function createServer({ store, config, signals, provider, app, aiEnabled,
     if (pathname === '/api/results') {
       const run = runOf(q);
       const trades = store.trades({ runId: run });
-      const settings = store.runs().find((r) => r.id === run)?.settings;
+      const info = store.runs().find((r) => r.id === run);
+      const settings = info?.settings;
+      const start = info?.startedAt ?? 0;
+      const end = run === runId ? Date.now() : info?.lastActivityAt ?? start;
       // A past run may include rules that have since been removed or renamed.
       const ids = signals.map((s) => s.id).filter((id) => run === runId || trades.some((t) => t.strategy === id));
       for (const t of trades) if (t.strategy !== RANDOM_STRATEGY && !ids.includes(t.strategy)) ids.push(t.strategy);
@@ -150,7 +153,9 @@ export function createServer({ store, config, signals, provider, app, aiEnabled,
         runId: run,
         startingBankrollUsd: bankroll,
         breakevenMovePct: breakevenMove(costs),
-        strategies: strategyResults({ trades, strategies: ids, startingBankroll: bankroll, latestPrice }),
+        strategies: strategyResults({ trades, strategies: ids, startingBankroll: bankroll, latestPrice, window: { start, end } }),
+        // Paper-run clock from the go-live rules: stops longer than 5 minutes don't count.
+        clock: { startedAt: start, activeMs: store.activeMs(start, end, GO_LIVE.maxGapMs), targetMs: GO_LIVE.paperRunMs },
         calibration: calibration(trades),
       };
     }

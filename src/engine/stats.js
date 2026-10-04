@@ -115,7 +115,53 @@ export function verdict(rule, twin) {
  */
 
 /**
- * @typedef {BookResult & {strategy: string, twin: BookResult|null, verdict: Verdict|null}} StrategyResult
+ * @typedef {Object} GoLiveCheck
+ * @property {string} id
+ * @property {string} label   Short plain-words rule, shown on hover.
+ * @property {boolean} pass
+ * @property {string} detail  Where the rule stands now.
+ */
+
+/** Thresholds from the go-live rules (go-live-rules.md, part 2). */
+export const GO_LIVE = { minTrades: MIN_TRADES_FOR_VERDICT, minAvgPct: 0.05, paperRunMs: 3 * 3600_000, maxGapMs: 5 * 60_000 };
+
+/**
+ * The six go-live checks for one rule, over its closed trades.
+ * "Both halves" splits the run's active window at its midpoint in time.
+ *
+ * @param {PaperTrade[]} rule   Closed trades of the rule.
+ * @param {PaperTrade[]} twin   Closed trades of its random twin.
+ * @param {{start: number, end: number}} window
+ * @returns {GoLiveCheck[]}
+ */
+export function goLiveChecks(rule, twin, window) {
+  const sum = (/** @type {PaperTrade[]} */ ts) => ts.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
+  const money = (/** @type {number} */ x) => `${x >= 0 ? '+' : '-'}$${Math.abs(x).toFixed(2)}`;
+  const n = rule.length;
+  const pnl = sum(rule);
+  const twinPnl = sum(twin);
+  const avg = n ? rule.reduce((a, t) => a + (t.pnlPct ?? 0), 0) / n : null;
+  const best = n ? Math.max(...rule.map((t) => t.pnlUsd ?? 0)) : 0;
+  const mid = window.start + (window.end - window.start) / 2;
+  const first = sum(rule.filter((t) => (t.closedAt ?? 0) < mid));
+  const second = sum(rule.filter((t) => (t.closedAt ?? 0) >= mid));
+  return [
+    { id: 'trades', label: `At least ${GO_LIVE.minTrades} closed trades`, pass: n >= GO_LIVE.minTrades, detail: `${n} closed` },
+    { id: 'profit', label: 'Total profit is positive', pass: n > 0 && pnl > 0, detail: money(pnl) },
+    { id: 'random', label: 'Made more than its random twin', pass: n > 0 && pnl > twinPnl, detail: `${money(pnl)} vs ${money(twinPnl)}` },
+    {
+      id: 'average',
+      label: `Average trade +${GO_LIVE.minAvgPct * 100}% or better`,
+      pass: avg !== null && avg >= GO_LIVE.minAvgPct,
+      detail: avg === null ? 'no trades yet' : `${avg >= 0 ? '+' : ''}${(avg * 100).toFixed(1)}%`,
+    },
+    { id: 'best', label: 'Still positive without its best trade', pass: n > 1 && pnl - best > 0, detail: money(pnl - best) },
+    { id: 'halves', label: 'Positive in both halves of the run', pass: n > 0 && first > 0 && second > 0, detail: `${money(first)} then ${money(second)}` },
+  ];
+}
+
+/**
+ * @typedef {BookResult & {strategy: string, twin: BookResult|null, verdict: Verdict|null, checks: GoLiveCheck[]|null}} StrategyResult
  *   `twin` is the signal's random control book (null for the random row itself).
  *   For the random row, money fields are averages across all twins.
  */
@@ -163,9 +209,10 @@ function bookResult(mine, startingBankroll, latestPrice) {
  * @param {string[]} a.strategies          Signal ids, in display order (random is added last).
  * @param {number} a.startingBankroll      Per book.
  * @param {(poolAddress: string) => {price: number, liquidityUsd: number|null}|null} a.latestPrice
+ * @param {{start: number, end: number}} [a.window]  The run's time span, for the "both halves" check.
  * @returns {StrategyResult[]}
  */
-export function strategyResults({ trades, strategies, startingBankroll, latestPrice }) {
+export function strategyResults({ trades, strategies, startingBankroll, latestPrice, window }) {
   const closedIn = (/** @type {string} */ book) => trades.filter((t) => t.book === book && t.status === 'closed');
   const rows = strategies.map((strategy) => ({
     strategy,
@@ -180,6 +227,7 @@ export function strategyResults({ trades, strategies, startingBankroll, latestPr
       latestPrice,
     ),
     verdict: verdict(closedIn(strategy), closedIn(`${RANDOM_STRATEGY}:${strategy}`)),
+    checks: goLiveChecks(closedIn(strategy), closedIn(`${RANDOM_STRATEGY}:${strategy}`), window ?? spanOf(trades)),
   }));
   const randomAll = bookResult(
     trades.filter((t) => t.strategy === RANDOM_STRATEGY),
@@ -199,8 +247,15 @@ export function strategyResults({ trades, strategies, startingBankroll, latestPr
     equityCurve: [],
     twin: null,
     verdict: null,
+    checks: null,
   };
   return [...rows, randomRow];
+}
+
+/** @param {PaperTrade[]} trades */
+function spanOf(trades) {
+  const ts = trades.flatMap((t) => [t.signalAt, t.closedAt ?? t.signalAt]);
+  return ts.length ? { start: Math.min(...ts), end: Math.max(...ts) } : { start: 0, end: 0 };
 }
 
 /**

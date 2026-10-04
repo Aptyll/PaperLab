@@ -630,6 +630,26 @@ export class Store {
       .run(p.ts, p.ok ? 1 : 0, p.calls, p.pools, p.error);
   }
 
+  /**
+   * Time the engine was actually running between two moments: gaps of more
+   * than `maxGapMs` between polls (the app was stopped) don't count.
+   * @param {number} from
+   * @param {number} to
+   * @param {number} maxGapMs
+   */
+  activeMs(from, to, maxGapMs) {
+    const r = /** @type {{ms: number|null}|undefined} */ (
+      this.db
+        .prepare(
+          `SELECT SUM(MIN(ts - prev, ?)) AS ms FROM (
+             SELECT ts, LAG(ts) OVER (ORDER BY ts) AS prev FROM polls WHERE ts >= ? AND ts <= ?
+           ) WHERE prev IS NOT NULL AND ts - prev <= ?`,
+        )
+        .get(maxGapMs, from, to, maxGapMs)
+    );
+    return r?.ms ?? 0;
+  }
+
   /** @param {number} limit */
   recentPolls(limit) {
     return this.db.prepare('SELECT * FROM polls ORDER BY id DESC LIMIT ?').all(limit);

@@ -9,7 +9,7 @@ import { normalizeResponse } from '../src/providers/geckoterminal.js';
 import { buildPendingTrade, fillPending, exitReasonFor, closeTrade, breakevenMove, priceImpact } from '../src/engine/paper.js';
 import { loadSignals } from '../src/engine/signal-loader.js';
 import { runCycle } from '../src/engine/cycle.js';
-import { strategyResults, wilson, calibration, verdict } from '../src/engine/stats.js';
+import { strategyResults, wilson, calibration, verdict, goLiveChecks } from '../src/engine/stats.js';
 import { Store } from '../src/db.js';
 import { DEFAULTS } from '../src/config.js';
 import { runSettings, canContinue } from '../src/engine/runs.js';
@@ -244,6 +244,12 @@ test('a failed fetch still closes trades past their time limit', async () => {
   assert.equal(r.ok, false);
   assert.equal(r.closed.length, 2, 'signal trade and its random twin');
   assert.ok(r.closed.every((t) => t.exitReason === 'no_data'));
+  assert.equal(r.queued.length, 0, 'no new buys while prices are stale');
+  assert.equal(r.signalEvents, 0);
+  fail = false;
+  now += 60_000;
+  const back = await runCycle(deps);
+  assert.ok(back.signalEvents > 0, 'rules run again on the next good data');
   store.close();
 });
 
@@ -380,4 +386,21 @@ test('verdict: too early, no edge, leaning, clear', () => {
   assert.equal(verdict(trades(noisy(-0.05, 30)), trades(noisy(0, 30))).label, 'no_edge');
   assert.equal(verdict(trades(noisy(0.05, 30)), trades(noisy(0, 30))).label, 'leaning');
   assert.equal(verdict(trades(noisy(0.2, 30)), trades(noisy(0, 30))).label, 'clear');
+});
+
+test('go-live checks follow the written rules', () => {
+  /** @param {number[]} pnls @param {number} [t0] */
+  const closed = (pnls, t0 = 0) =>
+    pnls.map((p, i) => /** @type {any} */ ({ status: 'closed', pnlUsd: p * 50, pnlPct: p, closedAt: t0 + i * 1000 }));
+  const window = { start: 0, end: 60_000 };
+  const good = closed(Array.from({ length: 40 }, (_, i) => (i % 3 === 0 ? -0.2 : 0.3)));
+  const byId = (/** @type {any[]} */ cs) => Object.fromEntries(cs.map((c) => [c.id, c.pass]));
+  assert.deepEqual(byId(goLiveChecks(good, closed([0.01, -0.02]), window)), {
+    trades: true, profit: true, random: true, average: true, best: true, halves: true,
+  });
+  const lucky = closed([...Array(30).fill(-0.05), 20]);
+  const c = byId(goLiveChecks(lucky, [], window));
+  assert.equal(c.profit, true, 'one moonshot makes the total positive');
+  assert.equal(c.best, false, 'but not without it');
+  assert.equal(c.halves, false, 'all the profit is in the second half');
 });

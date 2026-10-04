@@ -20,7 +20,7 @@ npm run check      # type check (JSDoc + // @ts-check)
 
 ## Screens
 
-- **Scoreboard** (home): one row per rule with its verdict against its random twin, a balance chart, and a feed of buys and sells. Click a row for that rule's page.
+- **Scoreboard** (home): a paper-run clock toward the 3 hours the go-live rules ask for, then one card per rule. The big number is how far the rule is ahead of its random twin; the six pips are the go-live checks (hover for each); the bar along the bottom fills toward 30 closed trades. The rule closest to going live is outlined. Balance chart, open positions and activity sit below in panels you can fold away.
 - **Rule page**: balance vs twin, open trades with their live result, closed trades with the reason each one fired. Twin trades, skipped trades and every fire are folded away below.
 - **Coins**: the trending list. Coins below the liquidity floor are dimmed; dots show which rules hold a coin. Click one for its price chart with every buy and sell marked.
 
