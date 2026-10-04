@@ -248,11 +248,13 @@ const OFF_GAPS = `off_gaps AS MATERIALIZED (
 /**
  * Why else a trade can't be trusted: it was waiting to buy or holding while
  * Paper Lab was off, so nothing checked its stop or target and it sold (or
- * will sell) at whatever the price was hours later.
+ * will sell) at whatever the price was hours later. Names the total time off
+ * across the trade's life. A cancelled order never held money, so it isn't flagged.
  */
-const OFF_FLAG = `(SELECT 'open while Paper Lab was off for ' ||
-    CASE WHEN g.to_ts - g.from_ts < 5400000 THEN printf('%d min', (g.to_ts - g.from_ts) / 60000) ELSE printf('%.1fh', (g.to_ts - g.from_ts) / 3600000.0) END
-  FROM off_gaps g WHERE g.from_ts >= trades.signal_at AND g.to_ts <= COALESCE(trades.closed_at, 9e15) ORDER BY g.from_ts LIMIT 1)`;
+const OFF_FLAG = `(SELECT CASE WHEN off IS NULL THEN NULL ELSE 'open while Paper Lab was off for ' ||
+    CASE WHEN off < 5400000 THEN printf('%d min', off / 60000) ELSE printf('%.1fh', off / 3600000.0) END END
+  FROM (SELECT SUM(g.to_ts - g.from_ts) AS off FROM off_gaps g
+    WHERE trades.status != 'cancelled' AND g.from_ts >= trades.signal_at AND g.to_ts <= COALESCE(trades.closed_at, 9e15)))`;
 
 const MANAGED = "(run_id IS NULL OR run_id NOT IN (SELECT id FROM runs WHERE origin = 'imported'))";
 const SNAPSHOT_SQL_COLS = SNAPSHOT_COLS.map((c) => c[1]).join(', ');
