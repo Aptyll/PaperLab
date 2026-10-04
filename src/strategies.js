@@ -27,4 +27,9 @@ export default [
   { id: 'eagle', codeName: 'Eagle', signal: 'buyer-seller-ratio', exits: { sizeUsd: 250, stopLossPct: 0.25, takeProfitPct: 0.6, timeLimitMin: 120 } },
   { id: 'bison', codeName: 'Bison', signal: 'liquidity-mcap-ratio', exits: { sizeUsd: 250, stopLossPct: 0.25, takeProfitPct: 0.6, timeLimitMin: 120 } },
   { id: 'mamba', codeName: 'Mamba', signal: 'volume-spike', exits: { sizeUsd: 250, stopLossPct: 0.25, takeProfitPct: 0.6, timeLimitMin: 120 } },
+
+  // Falcon, but it skips copycats: a coin whose ticker another token was
+  // already trading under. Both rug pulls on 2026-10-04 were copycat "HIGGS"
+  // pools. Same rule and exits as Falcon, so the two compare directly.
+  { id: 'kestrel', codeName: 'Kestrel', signal: 'buyer-seller-ratio', skipCopycats: true },
 ];

@@ -51,7 +51,15 @@ for (const r of db.prepare('SELECT UPPER(symbol) AS sym, token_address AS token,
 const collapses = /** @type {any[]} */ (db.prepare("SELECT UPPER(symbol) AS sym, token_address AS token, closed_at FROM trades WHERE exit_reason = 'collapsed'").all());
 
 /** @param {any} t @param {number} withinMs */
-const copycat = (t, withinMs) => (byTicker.get(String(t.symbol).toUpperCase()) ?? []).some((o) => o.token !== t.token_address && o.first < t.signal_at && o.first > t.signal_at - withinMs && o.first < (byTicker.get(String(t.symbol).toUpperCase())?.find((x) => x.token === t.token_address)?.first ?? Infinity));
+const seenSince = db.prepare('SELECT 1 FROM snapshots WHERE token_address = ? AND ts > ? AND ts <= ? LIMIT 1');
+// Same test as the live rule (Store.copycatOf): another token under this ticker, seen before this one and still seen in the window.
+const copycat = (t, withinMs) =>
+  (byTicker.get(String(t.symbol).toUpperCase()) ?? []).some(
+    (o) =>
+      o.token !== t.token_address &&
+      o.first < (byTicker.get(String(t.symbol).toUpperCase())?.find((x) => x.token === t.token_address)?.first ?? t.signal_at) &&
+      !!seenSince.get(o.token, t.signal_at - withinMs, t.signal_at),
+  );
 /** @param {any} t @param {number} withinMs */
 const tickerCollapsed = (t, withinMs) => collapses.some((c) => c.sym === String(t.symbol).toUpperCase() && c.closed_at < t.signal_at && c.closed_at > t.signal_at - withinMs);
 /** @param {any} t */

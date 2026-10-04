@@ -17,6 +17,7 @@ export const ENGINE_VERSION = 2;
  * @property {string} signal
  * @property {Record<string, number>} params
  * @property {Record<string, number>} exits   sizeUsd, stopLossPct, takeProfitPct, timeLimitMin.
+ * @property {boolean} [skipCopycats]  Skips copycat tickers; absent when off.
  */
 
 /**
@@ -49,7 +50,8 @@ export function runSettings(config, strategies) {
     universe: { ...config.universe },
     signals: Object.fromEntries(strategies.map((s) => [s.id, { ...s.params }])),
     strategies: Object.fromEntries(
-      strategies.map((s) => [s.id, { signal: s.signal.id, params: { ...s.params }, exits: exitsOf(s.trade) }]),
+      // skipCopycats is only recorded when set, so strategies without it keep the settings their runs were recorded with.
+      strategies.map((s) => [s.id, { signal: s.signal.id, params: { ...s.params }, exits: exitsOf(s.trade), ...(s.skipCopycats ? { skipCopycats: true } : {}) }]),
     ),
   };
 }

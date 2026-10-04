@@ -500,10 +500,10 @@ test('controls: only this page can turn live data on or off, or quit', async () 
   store.close();
 });
 
-test('the nine strategies continue the run the original three were in', async () => {
+test('the strategies continue the run the original three were in', async () => {
   const signals = await loadSignals();
   const strategies = resolveStrategies(STRATEGY_DEFS, signals, DEFAULTS.trade);
-  assert.deepEqual(strategies.map((s) => s.codeName), ['Falcon', 'Badger', 'Cobra', 'Hawk', 'Otter', 'Viper', 'Eagle', 'Bison', 'Mamba']);
+  assert.deepEqual(strategies.map((s) => s.codeName), ['Falcon', 'Badger', 'Cobra', 'Hawk', 'Otter', 'Viper', 'Eagle', 'Bison', 'Mamba', 'Kestrel']);
   const store = new Store(':memory:');
   // Settings exactly as the previous version recorded them: one entry per rule, shared exits.
   const legacy = {
@@ -837,4 +837,23 @@ test('turnover replay: price an hour later, each coin counted once per label per
   // A gap with no reading near the hour mark is skipped, not matched to a far later price.
   const gappy = [rows[0], snap({ ...rows[0], ts: rows[0].ts + 200 * min, priceUsd: 5 })];
   assert.equal(replayTurnover((each) => each('P', gappy)).find((r) => r.label === 'all')?.readings, 0);
+});
+
+test('a copycat ticker: Kestrel skips it, Falcon buys it; the first token is no copycat', async () => {
+  const store = new Store(':memory:');
+  let now = 10_000_000;
+  // The original HIGGS has traded for an hour; then a second token takes the same ticker.
+  const original = snap({ ts: now - 3600_000, poolAddress: 'P0', tokenAddress: 'T0', symbol: 'HIGGS', priceUsd: 1, liquidityUsd: 300_000 });
+  store.insertSnapshot(original);
+  const pools = () => [snap({ ts: now, poolAddress: 'P1', tokenAddress: 'T1', symbol: 'higgs', priceUsd: 1, fdvUsd: 100_000, marketCapUsd: 100_000, liquidityUsd: 200_000, buyersM5: 50, sellersM5: 5 })];
+  const strategies = resolveStrategies(STRATEGY_DEFS.filter((d) => d.codeName === 'Falcon' || d.codeName === 'Kestrel'), await bsr(), DEFAULTS.trade);
+  const deps = { store, provider: fakeProvider(() => now, pools), strategies, config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, strategies), 0) };
+  const r = await runCycle(deps);
+  assert.ok(r.queued.some((t) => t.strategy === 'buyer-seller-ratio'), 'Falcon buys');
+  assert.ok(!r.queued.some((t) => t.strategy === 'kestrel'), 'Kestrel skips');
+  assert.ok(store.signalFiresSince(0, deps.runId).some((e) => e.signalId === 'kestrel'), 'the signal still shows');
+  assert.equal(store.copycatOf('HIGGS', 'T0', now)?.tokenAddress ?? null, null, 'the original is not a copycat');
+  assert.equal(store.copycatOf('HIGGS', 'T1', now)?.tokenAddress, 'T0');
+  assert.equal(store.copycatOf('HIGGS', 'T1', now + 25 * 3600_000), null, 'unless the original stopped trading a day ago');
+  store.close();
 });
