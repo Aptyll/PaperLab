@@ -499,13 +499,26 @@ export class Store {
    * @returns {number} Run id.
    */
   beginRun(settings, now) {
-    const last = /** @type {any} */ (this.db.prepare("SELECT * FROM runs WHERE origin = 'live' ORDER BY id DESC LIMIT 1").get());
+    const last = /** @type {any} */ (
+      this.db.prepare("SELECT * FROM runs WHERE origin IN ('live', 'migrated') ORDER BY id DESC LIMIT 1").get()
+    );
     if (last) {
       /** @type {RunSettings} */
-      const prev = JSON.parse(last.settings);
+      let prev = JSON.parse(last.settings);
+      if (last.origin === 'migrated') {
+        // An upgrade in the middle of a paper run shouldn't restart it. Older
+        // versions only recorded the trade settings, so compare those (and the
+        // engine); anything they didn't record is taken to be unchanged.
+        prev = {
+          ...settings,
+          engine: prev.engine,
+          trade: { ...settings.trade, ...prev.trade },
+          signals: { ...settings.signals, ...prev.signals },
+        };
+      }
       if (canContinue(prev, settings)) {
         const merged = { ...settings, signals: { ...prev.signals, ...settings.signals } };
-        this.db.prepare('UPDATE runs SET settings = ? WHERE id = ?').run(JSON.stringify(merged), last.id);
+        this.db.prepare("UPDATE runs SET settings = ?, origin = 'live' WHERE id = ?").run(JSON.stringify(merged), last.id);
         return Number(last.id);
       }
     }

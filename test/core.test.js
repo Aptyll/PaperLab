@@ -310,6 +310,36 @@ test('an older database is upgraded in place, backed up, and kept as a past run'
   again.close();
 });
 
+test('upgrading mid-run from the previous version keeps the same run going', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'paperlab-'));
+  const file = path.join(dir, 'paper.sqlite');
+  const db = new DatabaseSync(file);
+  db.exec(readFileSync(new URL('./fixtures/schema-v2.sql', import.meta.url), 'utf8'));
+  db.exec('PRAGMA user_version = 2');
+  db.prepare(
+    `INSERT INTO snapshots (id, ts, source, pool_address, token_address, symbol, name, price_usd) VALUES (1, 1000, 'x', 'P1', 'T1', 'A', 'A', 1)`,
+  ).run();
+  const t = DEFAULTS.trade;
+  db.prepare(
+    `INSERT INTO trades (strategy, book, pool_address, token_address, symbol, status, size_usd, fee_rate, slippage_rate, stop_loss_pct,
+       take_profit_pct, time_limit_ms, signal_at, signal_snapshot_id, signal_price)
+     VALUES ('volume-spike', 'volume-spike', 'P1', 'T1', 'A', 'pending', ?, ?, ?, ?, ?, ?, 1000, 1, 1)`,
+  ).run(t.sizeUsd, t.feeRate, t.slippageRate, t.stopLossPct, t.takeProfitPct, t.timeLimitMin * 60_000);
+  db.close();
+
+  const store = new Store(file);
+  const [migrated] = store.runs();
+  assert.equal(store.beginRun(runSettings(DEFAULTS, []), 5000), migrated.id, 'same rules: the run carries on');
+  assert.equal(store.runs()[0].origin, 'live');
+  assert.equal(store.runs().length, 1);
+  store.close();
+
+  const changed = new Store(file);
+  const other = { ...DEFAULTS, trade: { ...DEFAULTS.trade, stopLossPct: 0.1 } };
+  assert.notEqual(changed.beginRun(runSettings(other, []), 6000), migrated.id, 'changed rules still start a new run');
+  changed.close();
+});
+
 test('databases set aside by the previous version are merged in as past runs', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'paperlab-'));
   const file = path.join(dir, 'paper.sqlite');
