@@ -531,7 +531,8 @@ function interpolate(pts, t) {
  * @property {boolean} sell
  * @property {string} color
  * @property {{time: number, value: number}} [from]  Its buy, for a sell: joined by a dotted hairline.
- * @property {string} [label]  Small text beside a sell.
+ * @property {string} [label]  Small text beside the mark.
+ * @property {number} [weight]  Which labels win when there isn't room for all: bigger first.
  */
 
 /**
@@ -601,11 +602,9 @@ class TradeMarks {
       ctx.setLineDash([]);
       // Buys first, so a sell at the same moment draws on top.
       const radius = 6.5 * r;
-      // Labels that would overlap an earlier one are left out; hovering lists every trade.
-      /** @type {{x: number, y: number, w: number}[]} */
-      const labels = [];
-      const lineH = 11 * r;
-      /** @type {{text: string, x: number, y: number}[]} */
+      /** Taken space, as boxes: every mark, then each label drawn. @type {{x: number, y: number, w: number, h: number}[]} */
+      const taken = [];
+      /** @type {{text: string, x: number, y: number, weight: number}[]} */
       const wanted = [];
       for (const m of [...this.marks].sort((a, b) => Number(a.sell) - Number(b.sell))) {
         const p = this.xy(m, s);
@@ -622,17 +621,23 @@ class TradeMarks {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(m.sell ? 'S' : 'B', p.x, p.y + 0.5 * r);
-        if (m.label) wanted.unshift({ text: m.label, x: p.x + radius + 3 * r, y: p.y });
+        taken.push({ x: p.x - radius, y: p.y - radius, w: 2 * radius, h: 2 * radius });
+        if (m.label) wanted.push({ text: m.label, x: p.x + radius + 3 * r, y: p.y, weight: m.weight ?? 0 });
       }
-      // Labels after the marks, sells first (they were drawn last, so they come first here).
+      // Labels go where there's room, biggest first, so zoomed out only the
+      // trades that mattered most are named; zoom in (15m, 1h) to see more.
+      // Hovering always lists every trade.
       ctx.font = `${10 * r}px ${css('--mono')}`;
       ctx.fillStyle = css('--text-secondary');
       ctx.textAlign = 'left';
-      for (const w of wanted) {
-        const box = { x: w.x, y: w.y, w: ctx.measureText(w.text).width };
-        if (labels.some((l) => Math.abs(l.y - box.y) < lineH && box.x < l.x + l.w && l.x < box.x + box.w)) continue;
-        labels.push(box);
-        ctx.fillText(w.text, box.x, box.y);
+      const h = 12 * r;
+      const pad = 2 * r;
+      for (const w of wanted.sort((a, b) => b.weight - a.weight)) {
+        const box = { x: w.x - pad, y: w.y - h / 2, w: ctx.measureText(w.text).width + 2 * pad, h };
+        if (box.x + box.w > s.bitmapSize.width) continue;
+        if (taken.some((t) => box.x < t.x + t.w && t.x < box.x + box.w && box.y < t.y + t.h && t.y < box.y + box.h)) continue;
+        taken.push(box);
+        ctx.fillText(w.text, w.x, w.y);
       }
     });
   }
@@ -876,7 +881,14 @@ function balanceChart(el, lines, start, span = {}) {
   // Every buy and sell in view is marked at the moment it happened. With every
   // buy marked, lines from sells back to buys would only crowd the chart.
   for (const e of events) {
-    marks.push({ ...at(e), sell: e.sell, color: markColor(e.sell, e.trade.pnlPct), label: e.trade.symbol });
+    // Only sells are named, with how they did; the biggest wins and losses win the room.
+    marks.push({
+      ...at(e),
+      sell: e.sell,
+      color: markColor(e.sell, e.trade.pnlPct),
+      label: e.sell ? `${e.trade.symbol} ${pct(e.trade.pnlPct, 0)}` : undefined,
+      weight: e.sell ? Math.abs(e.trade.pnlUsd ?? 0) : 0,
+    });
   }
   drawn[drawn.length - 1].series.attachPrimitive(new TradeMarks(marks, grid));
   if (gaps.length || offFor) drawn[0].series.attachPrimitive(new GapMarks(gaps, offFor, grid));
@@ -944,7 +956,7 @@ function priceChart(el, snapshots, trades) {
     const buy = { time: Math.floor(t.openedAt / 1000), value: t.entryPrice };
     if (buy.time >= first) marks.push({ ...buy, sell: false, color: markColor(false, null) });
     if (t.closedAt && t.exitPrice !== null) {
-      marks.push({ time: Math.floor(t.closedAt / 1000), value: t.exitPrice, sell: true, color: markColor(true, t.pnlPct), from: buy.time >= first ? buy : undefined, label: pct(t.pnlPct, 0) });
+      marks.push({ time: Math.floor(t.closedAt / 1000), value: t.exitPrice, sell: true, color: markColor(true, t.pnlPct), from: buy.time >= first ? buy : undefined, label: pct(t.pnlPct, 0), weight: Math.abs(t.pnlUsd ?? 0) });
     }
   }
   series.attachPrimitive(new TradeMarks(marks, data.map((d) => d.time)));
@@ -1547,7 +1559,7 @@ function guidePage(view) {
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale. The square icon beside the dot switches full screen on and off (Esc also leaves it).</p>
-    <p><b>Buys and sells.</b> The chart marks every buy with a ringed B, at the moment it happened, and every sell with a filled S, green when the trade made money and red when it lost, each with the coin's ticker beside it (when tickers would overlap, some are left out). Hover anywhere on the chart to see the balances and the trades, with tickers, at that moment; move the mouse off the chart and the panel goes away.</p>
+    <p><b>Buys and sells.</b> The chart marks every buy with a ringed B, at the moment it happened, and every sell with a filled S, green when the trade made money and red when it lost, Sells are labeled with the coin's ticker and how the trade did, where there's room: the biggest wins and losses get a label first, so zoomed out you see the trades that mattered most, and the 15m or 1h view shows more. Hovering lists every trade. Hover anywhere on the chart to see the balances and the trades, with tickers, at that moment; move the mouse off the chart and the panel goes away.</p>
     <p><b>Hot now.</b> Top right: coins a strategy's rule fired on in the last 15 minutes, the ones the strategies are buying right now. Coins where more different rules agree come first (a fast and a slow version of one rule count once), then the best odds. The odds are measured, not guessed: how often that strategy's past paper trades reached its take profit before its stop loss or time limit, out of how many trades, next to its random picker's rate for comparison. Under 10 trades it says so instead of showing a rate. The percent on the right is how far the price has moved since the first signal, so you can see if you'd be late. Hover a coin for every strategy's numbers. It's there to point you at coins worth a look; you decide.</p>
     <p id="rug-signs"><b>Warning tags.</b> Under a Hot now coin, in amber: <i>copycat</i> means another token with the same ticker was trading first (copies of a trending coin are a common rug pull, where the creator pulls the pool's money and the price goes to zero); <i>new pool</i> means the pool is under 2 hours old; <i>ticker rugged</i> means another pool with that ticker collapsed in the last 6 hours. They hide nothing and change no trades. Bot 10 tests whether skipping copycats pays: it is Bot 1 with the same rule and exits, except it doesn't buy copycats, so compare the two. Two rug pulls is far too few to know yet.</p>
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the bots bought this session, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
