@@ -3,3 +3,5 @@ data/*.sqlite
 data/*.sqlite-*
 config.local.json
 .env
+_site/
+dist/

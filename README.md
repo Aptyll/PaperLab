@@ -4,6 +4,8 @@ Paper Lab watches trending Solana memecoins and lets ten trading bots practice o
 
 > **Paper trading only.** Paper Lab never connects to a wallet, never places a real trade, and makes no promise of profit. Memecoins are extremely risky, and most rules that look good early turn out to be noise.
 
+**See it:** the [demo](https://aptyll.github.io/Tool/) replays a recorded session in your browser. **Use it:** [download for Windows](https://github.com/Aptyll/Tool/releases/latest/download/PaperLab-Windows.zip) (nothing to install) or [for Mac](https://github.com/Aptyll/Tool/releases/latest/download/PaperLab-Mac.zip) (needs [Node](https://nodejs.org) once), then see the [setup guide](SETUP.md).
+
 ## The scoreboard
 
 The home screen. Across the top is your portfolio and each bot's profit or loss, best first. The chart shows every bot's balance over time, with a B where it bought. The dotted line is the random pickers: a bot below it is doing worse than chance. **Hot now** lists coins a bot's rule fired on in the last 15 minutes, with that bot's real hit rate (or "too few trades to tell"). **Best coins** ranks every coin the bots bought this session by profit. Sessions (top right) restart every bot at $1,000.

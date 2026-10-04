@@ -13,7 +13,7 @@
 
 Option Explicit
 
-Dim shell, fso, root, url, i
+Dim shell, fso, root, url, i, node
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
@@ -24,8 +24,12 @@ url = "http://localhost:4317/"
 If Not IsUp() Then
   If Not fso.FolderExists(root & "\data") Then fso.CreateFolder root & "\data"
   shell.CurrentDirectory = root
+  ' The download from the demo site brings its own Node in <Paper Lab folder>\node.
+  ' Otherwise use the one installed on this computer.
+  node = "node"
+  If fso.FileExists(root & "\node\node.exe") Then node = "node\node.exe"
   ' Window style 0 = hidden. Output goes to data\paper-lab.log.
-  shell.Run "cmd /c node --disable-warning=ExperimentalWarning src\main.js --paused >> ""data\paper-lab.log"" 2>&1", 0, False
+  shell.Run "cmd /c " & node & " --disable-warning=ExperimentalWarning src\main.js --paused >> ""data\paper-lab.log"" 2>&1", 0, False
   For i = 1 To 40
     WScript.Sleep 500
     If IsUp() Then Exit For

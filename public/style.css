@@ -446,3 +446,32 @@ a.tick:hover { text-decoration: none; background: color-mix(in srgb, var(--c) 10
 .range-pick button:hover { color: var(--text-secondary); }
 .range-pick button.on { background: var(--surface-2); color: var(--text-primary); }
 .chart-box:has(.chart-empty) .range-pick { display: none; }
+
+/* Public demo (GitHub Pages): a strip saying it's a recording, and the download page. */
+.demo-bar {
+  position: fixed; right: 16px; bottom: 16px; z-index: 30;
+  display: flex; align-items: center; gap: 14px;
+  padding: 7px 8px 7px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: color-mix(in srgb, var(--surface-1) 92%, transparent); backdrop-filter: blur(6px);
+  font-size: 12px;
+}
+.demo-bar b { color: var(--warning); letter-spacing: 0.04em; text-transform: uppercase; font-size: 11px; }
+.demo-get { color: var(--text-primary); text-decoration: none; border: 1px solid var(--border); border-radius: 5px; padding: 4px 10px; font-weight: 600; white-space: nowrap; }
+.demo-get:hover { border-color: var(--text-muted); }
+body.demo .view { padding-bottom: 72px; }
+/* The home screen fills the window; leave room under it for the strip. */
+body.demo .first-screen { min-height: calc(100vh - 22px + 6px - 56px); }
+.menu a { color: var(--text-secondary); text-decoration: none; padding: 7px 10px; border-radius: 4px; font: 12px var(--sans); }
+.menu a:hover { background: var(--surface-2); color: var(--text-primary); }
+.get-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin: 18px 0; }
+.get-card { border: 1px solid var(--border); border-radius: 8px; padding: 16px; background: var(--surface-1); }
+.get-card h2 { margin: 0 0 12px; font-size: 15px; }
+.get-card .btn-live { display: inline-block; text-decoration: none; margin-bottom: 14px; }
+.get-card ol { margin: 0; padding-left: 20px; color: var(--text-secondary); }
+.get-card li { margin-bottom: 6px; }
+.get p a, .get li a { color: var(--accent); }
+@media (max-width: 560px) {
+  .demo-bar { left: 12px; right: 12px; bottom: 12px; justify-content: space-between; }
+  .demo-bar .muted { display: none; }
+  body.demo .first-screen { min-height: calc(100vh - 16px + 6px - 56px); }
+}

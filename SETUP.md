@@ -4,6 +4,15 @@ This takes about 10 minutes the first time. You only do steps 1 and 2 once.
 
 Paper Lab is practice only. It never touches a wallet or real money.
 
+## Quickest way on Windows
+
+1. Download **[PaperLab-Windows.zip](https://github.com/Aptyll/Tool/releases/latest/download/PaperLab-Windows.zip)**. It includes its own copy of Node, so there is nothing to install.
+2. Right-click the ZIP and choose **Extract All**. You get a folder named `Paper Lab`.
+3. Open it and double-click **Start Paper Lab**. If Windows asks whether to run it, choose **Run** (or **More info**, then **Run anyway**). It asks because the files aren't signed.
+4. The page opens with live data off. Press **Turn On Live Data** to start.
+
+For a desktop icon, double-click **Create desktop icon** in `launcher\windows` (see the end of this guide). On a Mac, or to set it up by hand, follow the steps below.
+
 ## Step 1: Install Node (one time)
 
 Node is the free program that runs Paper Lab.
