@@ -402,14 +402,6 @@ function balanceChart(el, lines, start) {
   chart.timeScale().fitContent();
 }
 
-/** The home chart fills the rest of the window; the Trades panel sits below, out of sight until you scroll. */
-function fitHomeChart() {
-  const el = /** @type {HTMLElement|null} */ (document.querySelector('.chart.fill'));
-  if (!el) return;
-  const top = el.getBoundingClientRect().top + /** @type {HTMLElement} */ (document.getElementById('view')).scrollTop;
-  el.style.height = `${Math.max(280, Math.round(window.innerHeight - top - 12))}px`;
-}
-
 /**
  * @param {HTMLElement} el
  * @param {any[]} snapshots
@@ -534,12 +526,15 @@ async function scoreboardPage(view) {
   const openCount = mine.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending').length;
   const offNow = !state.status.live && state.viewRun === null;
 
+  // The first screen is the cards and the chart; the chart stretches to fill it, so Trades starts below the fold.
   view.innerHTML = `<div class="page wide">
-    ${pastRunBanner()}
-    ${rows.length ? `<div class="cards">${rows.map(strategyCard).join('')}</div>` : '<div class="empty">No active strategies.</div>'}
-    <div class="chart-box">
-      <div class="chart fill" id="balance"></div>
-      ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
+    <div class="first-screen">
+      ${pastRunBanner()}
+      ${rows.length ? `<div class="cards">${rows.map(strategyCard).join('')}</div>` : '<div class="empty">No active strategies.</div>'}
+      <div class="chart-box fill">
+        <div class="chart" id="balance"></div>
+        ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
+      </div>
     </div>
     ${panel('trades', `Trades <span class="count">${openCount ? `${openCount} open` : ''}</span>`, tradesList(mine), false)}
     ${calibrationBlock(res.calibration)}
@@ -547,7 +542,6 @@ async function scoreboardPage(view) {
 
   const el = document.getElementById('balance');
   if (!el) return;
-  fitHomeChart();
   /** @type {{color: string, curve: any[], dashed: boolean}[]} */
   const lines = rows.map((r) => ({ color: colorOf(r.strategy), curve: r.equityCurve, dashed: false }));
   const randoms = rows.map((r) => r.twin.equityCurve);
@@ -911,11 +905,6 @@ window.addEventListener('hashchange', () => {
   void render();
 });
 
-let resizeTimer = 0;
-window.addEventListener('resize', () => {
-  clearTimeout(resizeTimer);
-  resizeTimer = window.setTimeout(fitHomeChart, 100);
-});
 
 /** @param {string} url */
 const post = (url) => fetch(url, { method: 'POST', headers: { 'x-paper-lab': '1' } });

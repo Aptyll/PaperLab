@@ -308,9 +308,13 @@ details[open] > summary { margin-bottom: 8px; }
 }
 
 /* Home chart: always open, the biggest thing on screen. */
-.page.wide > .chart-box { margin: 4px 0 14px; }
+/* 46px top bar + the view's top padding, plus a few px so the Trades line never peeks in. */
+.first-screen { display: flex; flex-direction: column; min-height: calc(100vh - 46px - 22px + 6px); padding-bottom: 14px; }
+.first-screen > .chart-box.fill { flex: 1; display: flex; flex-direction: column; min-height: 280px; margin-top: 4px; }
+.first-screen > .chart-box.fill > .chart { flex: 1 1 0; height: auto; min-height: 0; }
 .guide-head { justify-content: space-between; margin-bottom: 14px; }
 .guide-head h1 { margin-bottom: 0; }
 .btn-link { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; padding: 5px 10px; font: 12px var(--sans); cursor: pointer; }
 .btn-link:hover { border-color: var(--text-muted); }
 table.t.trades { max-width: 760px; }
+@media (max-width: 700px) { .first-screen { min-height: calc(100vh - 46px - 16px + 6px); } }
