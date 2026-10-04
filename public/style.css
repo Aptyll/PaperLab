@@ -68,6 +68,8 @@ a:hover { text-decoration: underline; }
   transition: transform 0.16s ease;
 }
 .topbar-hot { position: fixed; top: 0; left: 0; right: 0; height: 12px; z-index: 19; }
+/* A faint handle so the hidden bar can be found. */
+.topbar-hot::after { content: ''; position: absolute; top: 3px; left: 50%; width: 40px; height: 3px; margin-left: -20px; border-radius: 2px; background: var(--text-muted); opacity: 0.35; }
 .topbar-hot:hover + .topbar, .topbar:hover, .topbar:focus-within, .topbar.menu-open, .topbar.pinned { transform: none; }
 .brand { color: var(--text-primary); font-weight: 700; letter-spacing: 0.1em; font-size: 12px; }
 .brand:hover { text-decoration: none; }
@@ -346,6 +348,8 @@ table.t.trades { max-width: 760px; }
 
 /* ---- strategy strip: portfolio first, then each strategy, most profit first ---- */
 .ticks { display: flex; flex-wrap: wrap; align-items: stretch; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
+.run-mark { margin-left: auto; align-self: flex-end; padding: 0 2px 8px 18px; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.run-mark:hover { color: var(--text-secondary); }
 .tick { display: flex; flex-direction: column; gap: 1px; padding: 4px 18px 8px; color: inherit; border-left: 1px solid var(--border); min-width: 0; }
 .tick:first-child { border-left: none; padding-left: 2px; }
 a.tick:hover { text-decoration: none; background: color-mix(in srgb, var(--c) 10%, transparent); }

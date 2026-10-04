@@ -298,6 +298,14 @@ function pastRunBanner() {
   </div>`;
 }
 
+/** Which run the scoreboard shows, and where the earlier ones are. Quiet, at the end of the strip. */
+function runMark() {
+  const runs = runsInOrder();
+  const run = runs.find((r) => r.id === state.status.runId);
+  if (state.viewRun !== null || runs.length < 2 || !run) return '';
+  return `<a class="run-mark" href="#/guide/past-runs" title="Changing a trading setting starts a new run with fresh balances. Earlier runs keep all their trades.">Run ${run.n} · since ${esc(clock(run.startedAt))} · Past runs</a>`;
+}
+
 /** Exits a strategy used in the run being shown. @param {string} id */
 function shownExits(id) {
   const run = shownRun();
@@ -413,6 +421,7 @@ function chartSpan(res) {
  * @property {boolean} dashed     The random pickers' line.
  * @property {string} label
  * @property {any[]} [trades]     This line's trades, for buy and sell marks.
+ * @property {number} [now]       Balance now with open trades counted as if sold, the same number as the strip.
  */
 
 /** Linear value of a curve at time t. @param {{t: number, v: number}[]} pts @param {number} t */
@@ -447,12 +456,13 @@ const FEED_ITEMS = 5;
  * @param {{from?: number|null, to?: number|null}} [span]  Run start and end, ms.
  */
 function balanceChart(el, lines, start, span = {}) {
-  if (!lines.some((l) => l.curve.length)) {
-    el.innerHTML = `<div class="empty chart-empty">No closed trades yet.</div>`;
+  if (!lines.some((l) => l.curve.length || l.trades?.length || (l.now !== undefined && Math.abs(l.now - start) >= 0.005))) {
+    const earlier = state.viewRun === null && runsInOrder().length > 1 ? ' Earlier results are under <a href="#/guide/past-runs">Past runs</a>.' : '';
+    el.innerHTML = `<div class="empty chart-empty">No trades yet in this run.${earlier}</div>`;
     return;
   }
   const times = lines.flatMap((l) => l.curve.map((p) => p.t));
-  const from = Math.min(span.from ?? Infinity, ...times);
+  const from = Math.min(span.from ?? Infinity, ...times, (span.to ?? Date.now()) - 60_000);
   const to = Math.max(span.to ?? -Infinity, ...times, from + 60_000);
   const steps = Math.min(800, Math.max(2, Math.ceil((to - from) / 15_000)));
   const stepMs = (to - from) / steps;
@@ -504,7 +514,13 @@ function balanceChart(el, lines, start, span = {}) {
       priceFormat: { type: 'custom', formatter: fmt, minMove: 0.01 },
     });
     const last = l.curve.length ? l.curve[l.curve.length - 1].equity : start;
-    const real = [{ t: from, v: start }, ...l.curve.map((p) => ({ t: p.t, v: p.equity })), { t: to, v: last }];
+    const real = [{ t: from, v: start }, ...l.curve.map((p) => ({ t: p.t, v: p.equity }))];
+    // The last step is open trades as if sold now, so the line ends where the strip's number is.
+    const end = grid[grid.length - 1] * 1000;
+    if (l.now !== undefined && Math.abs(l.now - last) >= 0.005 && end > real[real.length - 1].t) {
+      real.push({ t: Math.max(real[real.length - 1].t, end - stepMs), v: last }, { t: end, v: l.now });
+    }
+    real.push({ t: Math.max(to, end), v: real[real.length - 1].v });
     series.setData(grid.map((sec) => ({ time: sec, value: interpolate(real, sec * 1000) })));
     const marks = events
       .filter((e) => e.line === l && marked.has(e))
@@ -716,7 +732,7 @@ async function scoreboardPage(view) {
   view.innerHTML = `<div class="page wide">
     <div class="first-screen">
       ${pastRunBanner()}
-      ${rows.length ? `<div class="ticks">${portfolioTick(rows)}${rows.map(strategyTick).join('')}</div>` : '<div class="empty">No active strategies.</div>'}
+      ${rows.length ? `<div class="ticks">${portfolioTick(rows)}${rows.map(strategyTick).join('')}${runMark()}</div>` : '<div class="empty">No active strategies.</div>'}
       <div class="chart-box fill">
         <div class="chart" id="balance"></div>
         ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
@@ -737,9 +753,13 @@ async function scoreboardPage(view) {
     dashed: false,
     label: nameOf(r.strategy),
     trades: mine.filter((/** @type {any} */ t) => t.strategy === r.strategy),
+    now: r.equityUsd,
   }));
   const randoms = rows.map((r) => r.twin.equityCurve);
-  if (randoms.some((c) => c.length)) lines.push({ color: '', curve: averageCurve(randoms, res.startingBankrollUsd), dashed: true, label: 'Random (average)' });
+  const randomNow = rows.reduce((a, r) => a + r.twin.equityUsd, 0) / Math.max(1, rows.length);
+  if (randoms.some((c) => c.length) || Math.abs(randomNow - res.startingBankrollUsd) >= 0.005) {
+    lines.push({ color: '', curve: averageCurve(randoms, res.startingBankrollUsd), dashed: true, label: 'Random (average)', now: randomNow });
+  }
   balanceChart(el, lines, res.startingBankrollUsd, chartSpan(res));
 }
 
@@ -876,8 +896,8 @@ async function rulePage(view, id) {
     balanceChart(
       el,
       [
-        { color: colorOf(id), curve: r.equityCurve, dashed: false, label: nameOf(id), trades },
-        { color: '', curve: tw.equityCurve, dashed: true, label: 'Random' },
+        { color: colorOf(id), curve: r.equityCurve, dashed: false, label: nameOf(id), trades, now: r.equityUsd },
+        { color: '', curve: tw.equityCurve, dashed: true, label: 'Random', now: tw.equityUsd },
       ],
       res.startingBankrollUsd,
       chartSpan(res),
@@ -1021,10 +1041,10 @@ function guidePage(view) {
     <ul>${st.signals.map((/** @type {any} */ s) => `<li><b>${esc(s.name)}:</b> ${esc(ruleText(s))}</li>`).join('')}</ul>
     <p><b>Strategies.</b> A strategy is a code-name, one rule, and its own selling numbers. Settings never change under a code-name; trying new numbers means a new code-name, and a retired one stops buying but keeps its history.</p>
     <table class="t compact guide-table"><thead><tr><th>Code-name</th><th>Rule</th><th>Stop / target / time</th><th></th></tr></thead><tbody>${strategies}</tbody></table>
-    <p><b>The strip above the chart.</b> First your portfolio, then each strategy in its chart color, most profit first. A strategy's number is its profit so far, open trades counted as if sold now. Hover one for its rule, balance, how far it is ahead of its random picker, win rate and go-live checks. The menu bar hides at the top of the screen; move the mouse to the top edge to bring it back.</p>
+    <p><b>The strip above the chart.</b> First your portfolio, then each strategy in its chart color, most profit first. A strategy's number is its profit so far, open trades counted as if sold now. Hover one for its rule, balance, how far it is ahead of its random picker, win rate and go-live checks. The menu bar hides at the top of the screen; move the mouse to the small handle at the top edge to bring it back.</p>
     <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
-    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Lines move when trades finish.</p>
+    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Lines move when trades finish; the last step to now adds open trades as if sold now, so each line ends at the strip's number. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>
@@ -1047,7 +1067,7 @@ function route() {
   if (page === 'rule' && arg) return { page: 'rule', arg: decodeURIComponent(arg) };
   if (page === 'coin' && arg) return { page: 'coin', arg: decodeURIComponent(arg) };
   if (page === 'coins') return { page: 'coins', arg: '' };
-  if (page === 'guide') return { page: 'guide', arg: '' };
+  if (page === 'guide') return { page: 'guide', arg: arg ?? '' };
   return { page: 'home', arg: '' };
 }
 
@@ -1074,6 +1094,8 @@ async function render() {
     view.innerHTML = `<div class="page empty neg">Couldn't load this page: ${esc(err instanceof Error ? err.message : err)}</div>`;
   } finally {
     view.scrollTop = keepScroll;
+    // A link like #/guide/past-runs lands on that section.
+    if (r.page === 'guide' && r.arg && key !== lastRoute) document.getElementById(r.arg)?.scrollIntoView();
     lastRoute = key;
     rendering = false;
   }
