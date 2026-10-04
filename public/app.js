@@ -308,10 +308,20 @@ function pastRunBanner() {
  */
 function dataNote(excluded) {
   if (!excluded?.length) return '';
-  const coins = [...new Set(excluded.map((t) => t.symbol))];
-  const sum = excluded.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
-  const detail = excluded.map((t) => `${nameOf(t.strategy === 'random' ? t.book.split(':')[1] ?? t.strategy : t.strategy)}${t.strategy === 'random' ? ' (random)' : ''}: ${t.symbol} ${t.pnlUsd === null ? 'open' : money(t.pnlUsd)}. ${t.reason}`).join('\n');
-  return `<div class="data-note" title="${esc(detail)}"><span class="flag-dot"></span>${excluded.length} trade${excluded.length === 1 ? '' : 's'} on ${esc(coins.join(', '))} left out: ${excluded.length === 1 ? 'it was' : 'they were'} bought or sold on a price reading that looked wrong${sum ? ` (${money(sum)} not counted)` : ''}. <a href="#/guide/bad-prices">Why</a></div>`;
+  const off = excluded.filter((t) => t.kind === 'off');
+  const bad = excluded.filter((t) => t.kind !== 'off');
+  return noteFor(bad, () => 'bought or sold on a price reading that looked wrong', 'bad-prices') + noteFor(off, (one) => `open while Paper Lab was off, so nothing checked ${one ? 'its' : 'their'} stop or target`, 'time-off');
+}
+
+/** One line under the strip for one reason trades were left out. @param {any[]} list @param {(one: boolean) => string} why @param {string} anchor */
+function noteFor(list, why, anchor) {
+  if (!list.length) return '';
+  const coins = [...new Set(list.map((t) => t.symbol))];
+  const sum = list.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
+  const detail = list.map((t) => `${nameOf(t.strategy === 'random' ? t.book.split(':')[1] ?? t.strategy : t.strategy)}${t.strategy === 'random' ? ' (random)' : ''}: ${t.symbol} ${t.pnlUsd === null ? 'open' : money(t.pnlUsd)}. ${t.reason}`).join('\n');
+  const one = list.length === 1;
+  const where = coins.length > 4 ? `${coins.length} coins` : esc(coins.join(', '));
+  return `<div class="data-note" title="${esc(detail)}"><span class="flag-dot"></span>${list.length} trade${one ? '' : 's'} on ${where} left out: ${one ? 'it was' : 'they were'} ${why(one)}${sum ? ` (${money(sum)} not counted)` : ''}. <a href="#/guide/${anchor}">Why</a></div>`;
 }
 
 /** Which run the scoreboard shows, and where the earlier ones are. Quiet, at the end of the strip. */
@@ -976,8 +986,9 @@ function panel(key, title, body, openByDefault = true) {
 /** One-line plain explanation of how a trade ended (or where it stands). @param {any} t */
 function outcome(t) {
   const base = outcomeText(t);
-  // Bought or sold on a price reading the sanity check doesn't trust: shown, but not counted.
-  return t.dataFlag ? `<s class="muted">${base}</s> <span class="flag-note" title="${esc(t.dataFlag)}">left out: bad price reading</span>` : base;
+  // Bought or sold on a price reading the sanity check doesn't trust, or open while Paper Lab was off: shown, but not counted.
+  const why = t.dataFlagKind === 'off' ? 'open while off' : 'bad price reading';
+  return t.dataFlag ? `<s class="muted">${base}</s> <span class="flag-note" title="${esc(t.dataFlag)}">left out: ${why}</span>` : base;
 }
 
 /** @param {any} t */
@@ -1440,6 +1451,7 @@ function guidePage(view) {
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
     <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. A new trade starts a few dollars down: selling it right away would cost the fee and slippage both ways, about ${p100(2 * (t.feeRate + t.slippageRate))} of the trade. When two strategies hold the same coins (a fast and a slow version of one rule), their lines match until their exits differ; the one on top is drawn in long dashes so the other shows through. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
     <p><b>Time views.</b> The buttons in the chart's top corner show the last 15 minutes, hour or 4 hours, or the whole run. Paper Lab only collects prices while it's running, so time it was off (your computer asleep, the app closed) is skipped rather than drawn as a flat line: a faint dashed line marks the spot with how long it was off, like "off 6.2h". If it's off right now, the end of the chart says for how long.</p>
+    <p id="time-off"><b>Trades open while it was off.</b> While Paper Lab is off, nobody watches open trades: a stop loss or target that should have fired doesn't, and the trade sells at whatever the price is when Paper Lab comes back, hours later. Real trading wouldn't work like that, so any trade that was waiting to buy or holding through an off period (5 minutes or more without a price check) is crossed out and left out of the results and the chart, with a note under the strip. Random pickers' trades follow the same rule. Nothing is deleted.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale. The square icon beside the dot switches full screen on and off (Esc also leaves it).</p>

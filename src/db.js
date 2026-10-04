@@ -229,12 +229,30 @@ CREATE INDEX IF NOT EXISTS trades_run_book ON trades (run_id, book, pool_address
 CREATE INDEX IF NOT EXISTS trades_strategy_status ON trades (strategy, status);
 CREATE INDEX IF NOT EXISTS trades_book_pool ON trades (book, pool_address, status);
 CREATE INDEX IF NOT EXISTS trades_pool_status ON trades (pool_address, status);
+CREATE INDEX IF NOT EXISTS polls_ts ON polls (ts);
 `;
 
 /** Snapshots the price sanity check trusts. */
 const TRUSTED = 'id NOT IN (SELECT snapshot_id FROM snapshot_flags)';
 /** Why a trade can't be trusted: the sanity flag on the reading it was bought or sold at, if any. */
 const TRADE_FLAG = '(SELECT reason FROM snapshot_flags f WHERE f.snapshot_id IN (trades.entry_snapshot_id, trades.exit_snapshot_id) LIMIT 1)';
+
+/** Polls further apart than this mean Paper Lab was off (the chart marks the same gaps). */
+export const OFF_GAP_MS = 5 * 60_000;
+/**
+ * Times Paper Lab was off: no poll for longer than OFF_GAP_MS. Goes in a WITH clause
+ * ahead of any query that uses OFF_FLAG.
+ */
+const OFF_GAPS = `off_gaps AS MATERIALIZED (
+  SELECT prev AS from_ts, ts AS to_ts FROM (SELECT ts, LAG(ts) OVER (ORDER BY ts) AS prev FROM polls) WHERE ts - prev > ${OFF_GAP_MS})`;
+/**
+ * Why else a trade can't be trusted: it was waiting to buy or holding while
+ * Paper Lab was off, so nothing checked its stop or target and it sold (or
+ * will sell) at whatever the price was hours later.
+ */
+const OFF_FLAG = `(SELECT 'open while Paper Lab was off for ' ||
+    CASE WHEN g.to_ts - g.from_ts < 5400000 THEN printf('%d min', (g.to_ts - g.from_ts) / 60000) ELSE printf('%.1fh', (g.to_ts - g.from_ts) / 3600000.0) END
+  FROM off_gaps g WHERE g.from_ts >= trades.signal_at AND g.to_ts <= COALESCE(trades.closed_at, 9e15) ORDER BY g.from_ts LIMIT 1)`;
 
 const MANAGED = "(run_id IS NULL OR run_id NOT IN (SELECT id FROM runs WHERE origin = 'imported'))";
 const SNAPSHOT_SQL_COLS = SNAPSHOT_COLS.map((c) => c[1]).join(', ');
@@ -938,12 +956,15 @@ export class Store {
     if (f.book) (where.push('book = ?'), args.push(f.book));
     if (f.status) (where.push('status = ?'), args.push(f.status));
     if (f.poolAddress) (where.push('pool_address = ?'), args.push(f.poolAddress));
-    const sql = `SELECT *, ${TRADE_FLAG} AS data_flag FROM trades ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY signal_at DESC, id DESC LIMIT ?`;
+    const sql = `WITH ${OFF_GAPS} SELECT *, ${TRADE_FLAG} AS price_flag, ${OFF_FLAG} AS off_flag FROM trades ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY signal_at DESC, id DESC LIMIT ?`;
     args.push(f.limit ?? 100000);
     return this.db
       .prepare(sql)
       .all(...args)
-      .map((r) => /** @type {PaperTrade} */ ({ ...fromRow(TRADE_COLS, r), dataFlag: r.data_flag ?? null }));
+      .map((r) => {
+        const kind = r.price_flag ? 'price' : r.off_flag ? 'off' : null;
+        return /** @type {PaperTrade} */ ({ ...fromRow(TRADE_COLS, r), dataFlag: r.price_flag ?? r.off_flag ?? null, dataFlagKind: kind });
+      });
   }
 
   /**
@@ -985,9 +1006,9 @@ export class Store {
   cashDelta(book, runId) {
     const r = /** @type {{d: number|null}|undefined} */ (
       this.db
-        // A trade made on a reading the sanity check flagged doesn't count, either way.
+        // A trade made on a reading the sanity check flagged, or open while Paper Lab was off, doesn't count, either way.
         .prepare(
-          `SELECT SUM(CASE WHEN ${TRADE_FLAG} IS NOT NULL THEN 0 WHEN status IN ('open', 'pending') THEN -size_usd WHEN status = 'closed' THEN pnl_usd ELSE 0 END) AS d FROM trades WHERE book = ? AND run_id = ?`,
+          `WITH ${OFF_GAPS} SELECT SUM(CASE WHEN ${TRADE_FLAG} IS NOT NULL OR ${OFF_FLAG} IS NOT NULL THEN 0 WHEN status IN ('open', 'pending') THEN -size_usd WHEN status = 'closed' THEN pnl_usd ELSE 0 END) AS d FROM trades WHERE book = ? AND run_id = ?`,
         )
         .get(book, runId)
     );

@@ -713,3 +713,41 @@ test('starting over opens a new run that later starts continue, and time off spl
   assert.deepEqual(store.activeSpans(0, 3800_000, 5 * 60_000), [[0, 120_000], [3720_000, 3800_000]]);
   store.close();
 });
+
+test('a trade open while Paper Lab was off is left out; trades after it count', async () => {
+  const store = new Store(':memory:');
+  let now = 10_000_000;
+  const pools = () => [snap({ ts: now, poolAddress: 'P1', symbol: 'A', priceUsd: 1, fdvUsd: 100_000, marketCapUsd: 100_000, liquidityUsd: 200_000, buyersM5: 50, sellersM5: 5 })];
+  const strategies = await falcon();
+  const deps = { store, provider: fakeProvider(() => now, pools), strategies, config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, strategies), 0) };
+  await runCycle(deps);
+  now += 60_000;
+  assert.ok((await runCycle(deps)).opened.length >= 1);
+  const book = strategies[0].id;
+  assert.equal(store.trades({ book })[0].dataFlag, null, 'nothing is left out while it keeps running');
+
+  // The computer sleeps for 6 hours. On waking the trade sells past its time limit.
+  now += 6 * 3600_000;
+  const woke = await runCycle(deps);
+  assert.ok(woke.closed.length >= 1);
+  const [slept] = store.trades({ book, status: 'closed' });
+  assert.equal(slept.dataFlagKind, 'off');
+  assert.match(String(slept.dataFlag), /off for 6\.0h/);
+  assert.equal(store.cashDelta(book, deps.runId), 0, 'its result is not counted');
+
+  // A trade made after it came back, while it keeps running, counts as usual.
+  for (let i = 0; i < 3; i++) {
+    now += 60_000;
+    await runCycle(deps);
+  }
+  const { id: _, ...copy } = slept;
+  store.insertTrade({ ...copy, signalAt: now - 150_000, openedAt: now - 120_000, closedAt: now - 60_000, pnlUsd: 7 });
+  const later = store.trades({ book, status: 'closed' }).find((t) => t.id !== slept.id);
+  assert.equal(later?.dataFlag, null);
+  assert.equal(store.cashDelta(book, deps.runId), 7);
+  // A short nap reads in minutes.
+  store.insertPoll({ ts: now + 20 * 60_000, ok: true, calls: 1, pools: 1, error: null });
+  store.insertTrade({ ...copy, signalAt: now - 30_000, openedAt: now, closedAt: now + 20 * 60_000, pnlUsd: 3 });
+  assert.match(String(store.trades({ book, status: 'closed' })[0].dataFlag), /off for 2\d min$/);
+  store.close();
+});

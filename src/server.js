@@ -7,6 +7,7 @@ import { strategyResults, calibration, coinResults, priceHistory, hitRates, hotC
 import { breakevenMove } from './engine/paper.js';
 import { RANDOM_STRATEGY } from './engine/signal-loader.js';
 import { runSettings } from './engine/runs.js';
+import { OFF_GAP_MS } from './db.js';
 
 const PUBLIC_DIR = path.join(ROOT, 'public');
 /** Changes on every start, so updated page files load fresh after a restart. */
@@ -16,7 +17,8 @@ const CURVE_POINTS = 400;
 /** "Hot now": coins a rule fired on within this long. */
 const HOT_WINDOW_MIN = 15;
 /** Polls further apart than this mean Paper Lab wasn't collecting (asleep, off): the chart skips that time. */
-const GAP_MS = 5 * 60_000;
+/** The chart skips the same off periods that leave trades out. */
+const GAP_MS = OFF_GAP_MS;
 /** The last hour gets a point per poll (at most every 15s), so short chart views stay detailed. */
 const RECENT_MS = 3600_000;
 const TYPES = /** @type {Record<string, string>} */ ({
@@ -219,11 +221,11 @@ export function createServer({ store, config, signals, strategies, provider, app
     if (pathname === '/api/results') {
       const run = runOf(q);
       const all = store.trades({ runId: run });
-      // Trades made on a price reading the sanity check flagged are left out, and listed so the page can say so.
+      // Trades made on a price reading the sanity check flagged, or open while Paper Lab was off, are left out, and listed so the page can say so.
       const trades = all.filter((t) => !t.dataFlag);
       const excluded = all
         .filter((t) => t.dataFlag && (t.status === 'open' || t.status === 'closed'))
-        .map((t) => ({ id: t.id, strategy: t.strategy, book: t.book, symbol: t.symbol, poolAddress: t.poolAddress, status: t.status, openedAt: t.openedAt, closedAt: t.closedAt, pnlUsd: t.pnlUsd, reason: t.dataFlag }));
+        .map((t) => ({ id: t.id, strategy: t.strategy, book: t.book, symbol: t.symbol, poolAddress: t.poolAddress, status: t.status, openedAt: t.openedAt, closedAt: t.closedAt, pnlUsd: t.pnlUsd, reason: t.dataFlag, kind: t.dataFlagKind }));
       const info = store.runs().find((r) => r.id === run);
       const settings = info?.settings;
       const start = info?.startedAt ?? 0;

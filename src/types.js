@@ -157,7 +157,8 @@
  * @property {string|null} aiModel
  * @property {string|null} aiRationale
  * @property {number|null} runId     The run (rule set) it belongs to. See src/engine/runs.js.
- * @property {string|null} [dataFlag] Set when it was bought or sold on a price reading the sanity check flagged: such trades are left out of results.
+ * @property {string|null} [dataFlag] Why it's left out of results: bought or sold on a price reading the sanity check flagged, or open while Paper Lab was off.
+ * @property {'price'|'off'|null} [dataFlagKind] Which of those two.
  */
 
 /**
