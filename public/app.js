@@ -1096,6 +1096,8 @@ async function loadResults() {
 async function refresh() {
   try {
     const [status] = await Promise.all([getJson('/api/status'), loadResults()]);
+    // Paper Lab restarted (an update, or the desktop icon again): load the new page and its new run.
+    if (state.status && status.bootId !== state.status.bootId) return location.reload();
     state.status = status;
     // Colors follow the strategy list, so a strategy keeps its color on every page.
     state.status.strategies.forEach((/** @type {any} */ s, /** @type {number} */ i) => {
@@ -1200,6 +1202,8 @@ window.addEventListener('pageshow', (e) => {
 });
 
 const events = new EventSource('/api/events');
+// The connection drops when Paper Lab restarts; when it comes back, check right away rather than at the next timer.
+events.addEventListener('open', () => void refresh());
 events.addEventListener('cycle', () => void refresh());
 events.addEventListener('state', () => void refresh());
 const timer = setInterval(() => void refresh(), 30_000);

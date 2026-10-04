@@ -563,3 +563,33 @@ test('coin results rank coins by strategy profit, random pickers left out', () =
   assert.equal(coins[1].wins, 1);
   assert.ok(coins[0].openUsd > 9.9 && coins[0].openUsd <= 10, `open value ${coins[0].openUsd}`);
 });
+
+test('a new run keeps pricing and closing trades left open in the old run', async () => {
+  const store = new Store(':memory:');
+  let now = 10_000_000;
+  let price = 1;
+  const pools = () => [
+    snap({ ts: now, poolAddress: 'P1', symbol: 'A', priceUsd: price, buyersM5: 50, sellersM5: 5 }),
+    snap({ ts: now, poolAddress: 'P2', symbol: 'B', priceUsd: price, trendingRank: 2 }),
+  ];
+  const first = await falcon();
+  const old = { store, provider: fakeProvider(() => now, pools), strategies: first, config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, first), 0) };
+  await runCycle(old);
+  now += 60_000;
+  assert.equal((await runCycle(old)).opened.length, 2);
+
+  // Bigger trades: a new run starts, as when trade size went from $50 to $100.
+  const bigger = { ...DEFAULTS, trade: { ...DEFAULTS.trade, sizeUsd: DEFAULTS.trade.sizeUsd * 2 } };
+  const strategies = resolveStrategies(STRATEGY_DEFS.slice(0, 1), await bsr(), bigger.trade);
+  const runId = store.beginRun(runSettings(bigger, strategies), now);
+  assert.notEqual(runId, old.runId);
+
+  now += 60_000;
+  price = 2;
+  const r = await runCycle({ ...old, config: bigger, strategies, runId });
+  const closedOld = r.closed.filter((t) => t.runId === old.runId);
+  assert.equal(closedOld.length, 2, 'the old run\'s open trades close under their own exits');
+  assert.ok(closedOld.every((t) => t.exitReason === 'take_profit' && t.sizeUsd === DEFAULTS.trade.sizeUsd));
+  assert.equal(store.trades({ status: 'open', runId: old.runId }).length, 0);
+  store.close();
+});

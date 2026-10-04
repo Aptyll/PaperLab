@@ -105,6 +105,7 @@ export function createServer({ store, config, signals, strategies, provider, app
         runId,
         runs: store.runs(),
         live: app?.running ?? false,
+        bootId: BOOT_ID,
       };
     }
     if (pathname === '/api/tokens') {
