@@ -11,8 +11,8 @@
 //   #/guide        How it all works, and past runs
 //
 // A strategy is a code-name (Falcon, Hawk...) plus one rule and its exits.
-// The "Show" filter picks which strategies the home screen, its chart and the
-// portfolio number in the top bar cover.
+// The home screen, its chart and the portfolio number cover active (not
+// retired) strategies.
 
 /** @type {any} */
 const LWC = /** @type {any} */ (window).LightweightCharts;
@@ -26,7 +26,6 @@ const state = {
   /** @type {Record<string, string>} */ colors: {},
   /** @type {any[]} */ charts: [],
   /** @type {number|null} Past run being viewed; null means the current run. */ viewRun: null,
-  /** Which strategies to show. */ show: load('show') ?? 'active',
 };
 
 /** @param {string} k */
@@ -178,34 +177,11 @@ function statusOf(r) {
 const checksTip = (r) =>
   ['Go-live checks', ...(r.checks ?? []).map((/** @type {any} */ x) => `${x.pass ? '✓' : '✗'} ${x.label} (${x.detail})`)].join('\n');
 
-// ---------- the Show filter ----------
+// ---------- which strategies show ----------
 
-/** Filter choices: fixed views, then one per rule. */
-function showOptions() {
-  const rules = [...new Set((state.status?.strategies ?? []).map((/** @type {any} */ s) => s.rule))];
-  return [
-    { value: 'active', label: 'Active' },
-    { value: 'ahead', label: 'Ahead of random' },
-    { value: 'ready', label: 'Ready' },
-    { value: 'retired', label: 'Retired' },
-    { value: 'all', label: 'All' },
-    ...rules.map((id) => ({ value: `rule:${id}`, label: ruleName(String(id)) })),
-  ];
-}
-
-/** Results of the strategies the filter shows, best status first. @param {any[]} rows */
+/** Results of the active (not retired) strategies, best status first. @param {any[]} rows */
 function shownStrategies(rows) {
-  const f = state.show;
-  const retired = (/** @type {any} */ r) => strategyOf(r.strategy)?.retired ?? false;
-  const keep = rows.filter((r) => {
-    if (r.strategy === 'random') return false;
-    if (f === 'all') return true;
-    if (f === 'retired') return retired(r);
-    if (f === 'ahead') return edgeUsd(r) > 0;
-    if (f === 'ready') return statusOf(r).key === 'ready';
-    if (f.startsWith('rule:')) return strategyOf(r.strategy)?.rule === f.slice(5);
-    return !retired(r);
-  });
+  const keep = rows.filter((r) => r.strategy !== 'random' && !(strategyOf(r.strategy)?.retired ?? false));
   return keep.sort((a, b) => statusOf(a).rank - statusOf(b).rank || edgeUsd(b) - edgeUsd(a));
 }
 
@@ -260,7 +236,7 @@ function renderPortfolio() {
   el.textContent = dollars(avg);
   el.className = `portfolio ${avg > start + 0.5 ? 'pos' : avg < start - 0.5 ? 'neg' : ''}`;
   el.title = [
-    `Average balance of the ${rows.length} strateg${rows.length === 1 ? 'y' : 'ies'} shown, including open trades${state.viewRun === null ? '' : ' (past run)'}:`,
+    `Average balance of the ${rows.length} active strateg${rows.length === 1 ? 'y' : 'ies'}, including open trades${state.viewRun === null ? '' : ' (past run)'}:`,
     ...rows.map((r) => `${nameOf(r.strategy)}  ${dollars(r.equityUsd)}`),
   ].join('\n');
 }
@@ -426,12 +402,12 @@ function balanceChart(el, lines, start) {
   chart.timeScale().fitContent();
 }
 
-/** The home chart fills the rest of the window, leaving room for the folded Trades panel below it. */
+/** The home chart fills the rest of the window; the Trades panel sits below, out of sight until you scroll. */
 function fitHomeChart() {
   const el = /** @type {HTMLElement|null} */ (document.querySelector('.chart.fill'));
   if (!el) return;
   const top = el.getBoundingClientRect().top + /** @type {HTMLElement} */ (document.getElementById('view')).scrollTop;
-  el.style.height = `${Math.max(280, Math.round(window.innerHeight - top - 64))}px`;
+  el.style.height = `${Math.max(280, Math.round(window.innerHeight - top - 12))}px`;
 }
 
 /**
@@ -500,22 +476,6 @@ function strategyCard(r) {
   </a>`;
 }
 
-const hm = (/** @type {number} */ ms) => `${Math.floor(ms / 3600_000)}:${String(Math.floor(ms / 60_000) % 60).padStart(2, '0')}`;
-
-/** Paper-run clock toward the 3 hours the go-live rules ask for. @param {any} c */
-function clockBar(c) {
-  const p = Math.min(1, c.activeMs / c.targetMs);
-  const tip = `Paper run time: ${hm(c.activeMs)} of ${hm(c.targetMs)}. Stops longer than 5 minutes don't count.`;
-  return `<div class="clock ${p >= 1 ? 'done' : ''}" title="${esc(tip)}"><span class="clock-t">${hm(c.activeMs)}<span class="muted"> / ${hm(c.targetMs)}</span></span><div class="clock-bar"><span style="width:${(p * 100).toFixed(1)}%"></span></div></div>`;
-}
-
-/** The Show filter. */
-function showPicker() {
-  return `<label class="show">Show <select id="show-pick">${showOptions()
-    .map((o) => `<option value="${esc(o.value)}" ${o.value === state.show ? 'selected' : ''}>${esc(o.label)}</option>`)
-    .join('')}</select></label>`;
-}
-
 /**
  * Collapsible panel that remembers whether it was open.
  * @param {string} key @param {string} title @param {string} body @param {boolean} [openByDefault]
@@ -576,8 +536,7 @@ async function scoreboardPage(view) {
 
   view.innerHTML = `<div class="page wide">
     ${pastRunBanner()}
-    <div class="clock-row">${clockBar(res.clock)}${showPicker()}</div>
-    ${rows.length ? `<div class="cards">${rows.map(strategyCard).join('')}</div>` : '<div class="empty">No strategies match this filter.</div>'}
+    ${rows.length ? `<div class="cards">${rows.map(strategyCard).join('')}</div>` : '<div class="empty">No active strategies.</div>'}
     <div class="chart-box">
       <div class="chart fill" id="balance"></div>
       ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
@@ -843,9 +802,8 @@ function guidePage(view) {
     <p><b>The six go-live checks.</b> At least 30 finished trades · total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
     <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Lines move when trades finish.</p>
-    <p><b>Show.</b> The menu next to the clock picks which strategies the home screen shows. The chart, the Trades list and the top-right number follow it.</p>
-    <p><b>The clock.</b> Counts paper-run time toward the 3 hours the go-live rules ask for. Breaks over 5 minutes don't count.</p>
-    <p><b>The top-right number.</b> Your pretend ${bank} split evenly across the strategies shown: the average of their balances, including open trades. The dot next to it is live data: green is fresh, red is stale, grey is off. Click it to turn live data off or quit.</p>
+    <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
+    <p><b>The top-right number.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades. The dot next to it is live data: green is fresh, red is stale, grey is off. Click it to turn live data off or quit.</p>
     <p><b>Coins.</b> Dimmed coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin.</p>
     <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not.</p>
     <h2 id="past-runs">Past runs</h2>
@@ -934,15 +892,6 @@ view.addEventListener(
   },
   true,
 );
-
-view.addEventListener('change', (e) => {
-  const el = /** @type {HTMLSelectElement} */ (e.target);
-  if (el.id !== 'show-pick') return;
-  state.show = el.value;
-  save('show', el.value);
-  renderPortfolio();
-  void render();
-});
 
 view.addEventListener('click', (e) => {
   const target = /** @type {HTMLElement} */ (e.target);

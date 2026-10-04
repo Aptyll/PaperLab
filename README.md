@@ -22,8 +22,8 @@ On Windows, `launcher/windows/Create desktop icon.cmd` adds a Paper Lab desktop 
 
 ## Screens
 
-- **Top bar**: the portfolio number (the average balance of the strategies shown, including open trades) and the live-data dot (green fresh, red stale, grey off; click for the menu).
-- **Scoreboard** (home): the paper-run clock and a **Show** filter (Active, Ahead of random, Ready, Retired, All, or one rule), then one compact card per strategy, sorted by status. The big number is how far the strategy is ahead of its random picker; the status line reads Warming up · n/30, Not ready · k/6 checks, Behind random, Ready · could be luck, or Ready (hover for the six checks). Below: the balance chart, always open (a solid line per strategy, one grey dashed line averaging their random pickers), and a folded Trades panel.
+- **Top bar**: the portfolio number (the average balance of the active strategies, including open trades) and the live-data dot (green fresh, red stale, grey off; click for the menu).
+- **Scoreboard** (home): one compact card per active strategy, sorted by status, and the balance chart filling the rest of the screen. The big number is how far the strategy is ahead of its random picker; the status line reads Warming up · n/30, Not ready · k/6 checks, Behind random, Ready · could be luck, or Ready (hover for the six checks). The chart has a solid line per strategy and one grey dashed line averaging their random pickers. Scroll down for the Trades panel.
 - **Strategy page** (`#/rule/<id>`): code-name, rule and exits; balance vs its random picker, the go-live checks and verdict, open and closed trades with the reason each one fired.
 - **Coins**: the trending list. Coins below the liquidity floor are dimmed; dots show which strategies hold a coin. Click one for its price chart with every buy and sell marked.
 - **Guide**: every explanation in plain words, with numbers taken from the current settings, the strategy list, and past runs (click one to view it).

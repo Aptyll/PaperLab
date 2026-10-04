@@ -163,16 +163,6 @@ table.t.compact td { padding: 5px 10px; }
 
 /* ---- HUD ---- */
 
-.clock-row { display: flex; align-items: center; gap: 18px; margin: 0 0 12px; }
-.clock-row .clock { flex: 1; margin: 0; }
-.clock { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; cursor: default; }
-.show { color: var(--text-muted); font-size: 12px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.show select { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; font: 12px var(--sans); padding: 4px 6px; }
-.clock-t { font: 12px var(--mono); color: var(--text-secondary); white-space: nowrap; }
-.clock-bar { flex: 1; height: 2px; background: var(--surface-2); border-radius: 1px; overflow: hidden; }
-.clock-bar > span { display: block; height: 100%; background: var(--text-muted); }
-.clock.done .clock-bar > span { background: var(--good); }
-.clock.done .clock-t { color: var(--good); }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
 .card {
