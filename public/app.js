@@ -10,6 +10,7 @@
 //   #/coin/<pool>  One coin: price chart with every trade marked
 //   #/guide        How it all works, and past runs
 //   #/notes        The research notebook (files in notes/), newest first
+//   #/get          Public demo only: how to download and run Paper Lab
 //
 // A strategy (a "bot", Bot 1, Bot 2...) is a name plus one rule and its exits.
 // The home screen, its chart and the portfolio number cover active (not
@@ -17,6 +18,21 @@
 
 /** @type {any} */
 const LWC = /** @type {any} */ (window).LightweightCharts;
+
+/**
+ * The public demo (GitHub Pages) has no Paper Lab behind it: it reads one saved
+ * session from files (scripts/export-demo.js) and changes nothing. Set by
+ * demo-data/demo.js, which only the demo site has.
+ * @type {{session: number, startedAt: number, recordedAt: number, download: {windows: string, mac: string, setup: string}}|null}
+ */
+const DEMO = /** @type {any} */ (window).PAPER_LAB_DEMO ?? null;
+if (DEMO) {
+  // "5m ago" and the chart's time views count from the moment the session was saved, not from today.
+  const realNow = Date.now.bind(Date);
+  const shift = DEMO.recordedAt - realNow();
+  Date.now = () => realNow() + shift;
+  document.body.classList.add('demo');
+}
 
 const SERIES_VARS = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5', '--series-6', '--series-7', '--series-8', '--series-9', '--series-10'];
 const css = (/** @type {string} */ v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -149,10 +165,13 @@ const forRun = (url) => (state.viewRun === null ? url : `${url}${url.includes('?
 /** Market cap, or fully diluted value when the source has none. 0 means "no figure". @param {any} s */
 const capOf = (s) => (s.marketCapUsd > 0 ? s.marketCapUsd : s.fdvUsd > 0 ? s.fdvUsd : null);
 
+/** Where the demo keeps what /api/... answered; the same names scripts/export-demo.js writes. @param {string} url */
+const demoUrl = (url) => `demo-data/${url.replace(/^\/api\//, '').replace(/\?.*$/, '')}.json`;
+
 /** @param {string} url */
 async function getJson(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`${r.status} ${url}`);
+  const r = await fetch(DEMO ? demoUrl(url) : url);
+  if (!r.ok) throw new Error(DEMO && r.status === 404 ? 'this part isn\'t in the recorded demo' : `${r.status} ${url}`);
   return r.json();
 }
 
@@ -206,7 +225,10 @@ function renderTopbar() {
   const failed = s.lastCycle && !s.lastCycle.ok;
   const btn = /** @type {HTMLElement} */ (document.getElementById('health'));
   const light = /** @type {HTMLElement} */ (btn.querySelector('.health'));
-  if (!s.live) {
+  if (DEMO) {
+    btn.title = `Recorded demo: Session ${DEMO.session}, saved ${dayTime(DEMO.recordedAt)}. Nothing here is live.`;
+    light.className = 'health off';
+  } else if (!s.live) {
     // Off until asked: the desktop icon starts Paper Lab with live data off.
     btn.title = 'Live data is off. Nothing is fetched or traded until you turn it on.';
     light.className = 'health off';
@@ -229,6 +251,10 @@ function renderTopbar() {
 function renderMenu() {
   const m = /** @type {HTMLElement} */ (document.getElementById('menu'));
   const live = state.status.live;
+  if (DEMO) {
+    m.innerHTML = `<a role="menuitem" href="#/get">Get Paper Lab</a>`;
+    return;
+  }
   m.innerHTML = `<button type="button" role="menuitem" data-live="${live ? 'off' : 'on'}">${live ? 'Turn off live data' : 'Turn on live data'}</button>
     <button type="button" role="menuitem" data-quit>Quit Paper Lab</button>`;
 }
@@ -351,7 +377,7 @@ function sessionBox() {
       return `<div class="session-row${viewing ? ' on' : ''}" data-open-run="${r.id}" role="menuitem">
         <span class="session-n">Session ${r.n}${now ? ' <span class="muted">· now</span>' : ''}</span>
         <span class="muted">${esc(dayTime(r.startedAt))}${now ? '' : ` to ${esc(dayTime(r.lastActivityAt))}`} · ${r.trades} trade${r.trades === 1 ? '' : 's'}</span>
-        ${now ? '' : `<button type="button" class="session-del" data-delete-session="${r.id}" title="Delete Session ${r.n} and its trades">Delete</button>`}
+        ${now || DEMO ? '' : `<button type="button" class="session-del" data-delete-session="${r.id}" title="Delete Session ${r.n} and its trades">Delete</button>`}
       </div>`;
     })
     .join('');
@@ -361,7 +387,7 @@ function sessionBox() {
     </button>
     <div class="session-menu" role="menu" ${state.sessionsOpen ? '' : 'hidden'}>
       ${rows}
-      <button type="button" class="session-new" data-new-session>New session: every bot starts at ${esc(dollars(state.status.startingBankrollUsd ?? 1000))}</button>
+      ${DEMO ? '' : `<button type="button" class="session-new" data-new-session>New session: every bot starts at ${esc(dollars(state.status.startingBankrollUsd ?? 1000))}</button>`}
     </div>
   </div>`;
 }
@@ -1084,7 +1110,7 @@ async function scoreboardPage(view) {
   ]);
   const mine = trades.filter((/** @type {any} */ t) => t.strategy !== 'random' && ids.has(t.strategy));
   const openCount = mine.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending').length;
-  const offNow = !state.status.live && state.viewRun === null;
+  const offNow = !state.status.live && state.viewRun === null && !DEMO;
 
   // The first screen is the cards and the chart; the chart stretches to fill it, so Trades starts below the fold.
   view.innerHTML = `<div class="page wide">
@@ -1661,6 +1687,50 @@ async function notesPage(view) {
   </div>`;
 }
 
+// ---------- public demo ----------
+
+/** The strip on every demo page: what this is, and where to get the real thing. */
+function demoBar() {
+  if (!DEMO) return;
+  const bar = document.createElement('div');
+  bar.className = 'demo-bar';
+  bar.innerHTML = `<span><b>Demo</b> <span class="muted">· a recorded paper-trading session · pretend money only</span></span><a class="demo-get" href="#/get">Get Paper Lab</a>`;
+  document.body.append(bar);
+}
+
+/** Demo only: how to download Paper Lab and run it on your own computer. @param {HTMLElement} view */
+function getPage(view) {
+  if (!DEMO) return;
+  const d = DEMO.download;
+  view.innerHTML = `<div class="page guide get">
+    <h1>Run Paper Lab yourself</h1>
+    <p>This page is a recording of Session ${DEMO.session}, saved ${esc(dayTime(DEMO.recordedAt))}. On your own computer, Paper Lab watches trending Solana memecoins live, using free public price data, and ten bots trade pretend money on them. It never connects to a wallet and never places a real trade. Everything stays on your computer.</p>
+    <div class="get-grid">
+      <section class="get-card">
+        <h2>Windows</h2>
+        <a class="btn-live big" href="${esc(d.windows)}">Download for Windows</a>
+        <ol>
+          <li>Unzip the download (right-click it, <b>Extract All</b>).</li>
+          <li>Open the folder and double-click <b>Start Paper Lab</b>. Nothing to install: it brings its own copy of Node.</li>
+          <li>If Windows asks whether to run it, choose <b>Run</b> (or <b>More info</b>, then <b>Run anyway</b>). It asks because the files aren't signed.</li>
+          <li>The page opens. Press <b>Turn On Live Data</b> to start.</li>
+        </ol>
+      </section>
+      <section class="get-card">
+        <h2>Mac</h2>
+        <a class="btn-live big" href="${esc(d.mac)}">Download for Mac</a>
+        <ol>
+          <li>Install Node once: the <b>LTS</b> button at <a href="https://nodejs.org" target="_blank" rel="noopener">nodejs.org</a>.</li>
+          <li>Unzip the download.</li>
+          <li>Right-click <b>Start Paper Lab.command</b> and choose <b>Open</b> (the first time only; macOS asks because it isn't signed).</li>
+          <li>The page opens. Press <b>Turn On Live Data</b> to start.</li>
+        </ol>
+      </section>
+    </div>
+    <p class="muted">Live data needs an internet connection, and Paper Lab only trades while your computer is awake. Step-by-step help: <a href="${esc(d.setup)}" target="_blank" rel="noopener">setup guide</a>. Practice only: memecoins are extremely risky, and nothing here is advice or a promise of profit.</p>
+  </div>`;
+}
+
 // ---------- routing & refresh ----------
 
 function route() {
@@ -1671,6 +1741,7 @@ function route() {
   if (page === 'coins') return { page: 'coins', arg: '' };
   if (page === 'guide') return { page: 'guide', arg: arg ?? '' };
   if (page === 'notes') return { page: 'notes', arg: arg ?? '' };
+  if (page === 'get' && DEMO) return { page: 'get', arg: '' };
   return { page: 'home', arg: '' };
 }
 
@@ -1693,6 +1764,7 @@ async function render() {
     else if (r.page === 'coin') await coinPage(view, r.arg);
     else if (r.page === 'guide') guidePage(view);
     else if (r.page === 'notes') await notesPage(view);
+    else if (r.page === 'get') getPage(view);
     else await scoreboardPage(view);
     if (key === lastRoute) {
       view.querySelectorAll('details').forEach((d, i) => {
@@ -1900,10 +1972,10 @@ async function quit() {
   closeMenu();
   if (!confirm('Quit Paper Lab? Live data stops and the helper shuts down. Your trades are saved.')) return;
   quitting = true;
-  events.close();
+  events?.close();
   clearInterval(timer);
   await post('/api/quit').catch(() => {});
-  document.body.innerHTML = `<div class="goodbye"><div class="brand">PAPER LAB</div><p>Paper Lab is off. Nothing is running.</p><p class="muted">Double-click the Paper Lab icon on your desktop to start it again. You can close this tab.</p></div>`;
+  document.body.innerHTML = `<div class="goodbye"><div class="brand">PAPER LAB</div><p>Paper Lab is off. Nothing is running.</p><p class="muted">Double-click the Paper Lab icon on your desktop (or Start Paper Lab in its folder) to start it again. You can close this tab.</p></div>`;
 }
 
 // A page restored from the browser's back/forward memory may be an older version: load it fresh.
@@ -1911,10 +1983,12 @@ window.addEventListener('pageshow', (e) => {
   if (e.persisted) location.reload();
 });
 
-const events = new EventSource('/api/events');
+// The demo is a saved session: nothing new arrives, so it loads once.
+const events = DEMO ? null : new EventSource('/api/events');
 // The connection drops when Paper Lab restarts; when it comes back, check right away rather than at the next timer.
-events.addEventListener('open', () => void refresh());
-events.addEventListener('cycle', () => void refresh());
-events.addEventListener('state', () => void refresh());
-const timer = setInterval(() => void refresh(), 30_000);
+events?.addEventListener('open', () => void refresh());
+events?.addEventListener('cycle', () => void refresh());
+events?.addEventListener('state', () => void refresh());
+const timer = DEMO ? undefined : setInterval(() => void refresh(), 30_000);
+if (DEMO) demoBar();
 void refresh();
