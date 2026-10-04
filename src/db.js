@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS snapshot_flags (
   flagged_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS snapshots_ts ON snapshots (ts);
+CREATE INDEX IF NOT EXISTS snapshots_symbol ON snapshots (symbol COLLATE NOCASE, token_address, ts);
 
 CREATE TABLE IF NOT EXISTS polls (
   id INTEGER PRIMARY KEY,
@@ -923,6 +924,44 @@ export class Store {
       .prepare('SELECT * FROM signal_events WHERE signal_id = ? AND run_id = ? ORDER BY ts DESC, id DESC LIMIT ?')
       .all(signalId, runId, limit)
       .map((r) => /** @type {SignalEvent} */ (fromRow(EVENT_COLS, r)));
+  }
+
+  /**
+   * Another token trading under the same ticker that was here first: a coin
+   * seen before this one and still seen in the last 24 hours. Copycats of a
+   * trending coin are a common rug pull. Null when this token is the first.
+   * @param {string} symbol
+   * @param {string} tokenAddress
+   * @param {number} now
+   * @returns {{tokenAddress: string, firstSeen: number}|null}
+   */
+  copycatOf(symbol, tokenAddress, now) {
+    const rows = /** @type {{token: string, first: number, last: number}[]} */ (
+      this.db
+        .prepare('SELECT token_address AS token, MIN(ts) AS first, MAX(ts) AS last FROM snapshots WHERE symbol = ? COLLATE NOCASE AND ts <= ? GROUP BY token_address')
+        .all(symbol, now)
+    );
+    const mine = rows.find((r) => r.token === tokenAddress)?.first ?? now;
+    const other = rows
+      .filter((r) => r.token !== tokenAddress && r.first < mine && r.last > now - 24 * 3600_000)
+      .sort((a, b) => a.first - b.first)[0];
+    return other ? { tokenAddress: other.token, firstSeen: other.first } : null;
+  }
+
+  /**
+   * When a trade on another pool with this ticker last collapsed (its pool's
+   * money vanished), since a moment; null if none.
+   * @param {string} symbol
+   * @param {string} poolAddress
+   * @param {number} sinceTs
+   */
+  tickerCollapsedSince(symbol, poolAddress, sinceTs) {
+    const r = /** @type {{t: number|null}|undefined} */ (
+      this.db
+        .prepare("SELECT MAX(closed_at) AS t FROM trades WHERE exit_reason = 'collapsed' AND symbol = ? COLLATE NOCASE AND pool_address != ? AND closed_at >= ?")
+        .get(symbol, poolAddress, sinceTs)
+    );
+    return r?.t ?? null;
   }
 
   /**

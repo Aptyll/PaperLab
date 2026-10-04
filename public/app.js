@@ -18,7 +18,7 @@
 /** @type {any} */
 const LWC = /** @type {any} */ (window).LightweightCharts;
 
-const SERIES_VARS = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5', '--series-6', '--series-7', '--series-8', '--series-9'];
+const SERIES_VARS = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5', '--series-6', '--series-7', '--series-8', '--series-9', '--series-10'];
 const css = (/** @type {string} */ v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
 const state = {
@@ -1130,11 +1130,14 @@ function hotSection(hot, offNow) {
         '',
         ...c.odds.map(oddsDetail),
         '',
+        ...(c.warnings?.length ? ['', ...c.warnings.map((/** @type {any} */ w) => `⚠ ${w.text}`)] : []),
+        '',
         'Measured from past paper trades, not a promise. Check the chart before buying.',
       ].join('\n');
+      const warn = (c.warnings ?? []).map((/** @type {any} */ w) => `<span class="hot-warn">${esc(({ copycat: 'copycat', new: 'new pool', rugged: 'ticker rugged' })[/** @type {'copycat'|'new'|'rugged'} */ (w.kind)] ?? w.kind)}</span>`).join('');
       return `<a class="hot-row" href="#/coin/${encodeURIComponent(c.poolAddress)}" title="${esc(tip)}">
         <span class="hot-top">${name(c)}<span class="holders">${c.strategies.map((/** @type {string} */ id) => dot(id)).join('')}</span>${c.rules > 1 ? `<span class="hot-agree">${c.rules} rules</span>` : ''}<span class="hot-ago">${ago(c.firstAt)}</span><b class="hot-move ${tone(c.movePct)}">${c.movePct === null ? '' : pct(c.movePct, 0)}</b></span>
-        <span class="hot-odds">${oddsLine(c.odds[0])}</span>
+        <span class="hot-odds">${oddsLine(c.odds[0])}</span>${warn ? `<span class="hot-warns">${warn}</span>` : ''}
       </a>`;
     })
     .join('');
@@ -1314,7 +1317,7 @@ async function rulePage(view, id) {
 function firesTable(events) {
   if (!events.length) return `<div class="empty">Hasn't fired yet.</div>`;
   const result = (/** @type {any} */ e) =>
-    e.tradeId ? 'traded' : ({ already_open: 'already holding', cooldown: 'sold it recently', no_cash: 'out of cash' })[/** @type {'already_open'|'cooldown'|'no_cash'} */ (e.skipReason)] ?? e.skipReason;
+    e.tradeId ? 'traded' : ({ already_open: 'already holding', cooldown: 'sold it recently', no_cash: 'out of cash', copycat: 'skipped: copycat ticker' })[/** @type {'already_open'|'cooldown'|'no_cash'|'copycat'} */ (e.skipReason)] ?? e.skipReason;
   return `<table class="t compact"><tbody>${events
     .map((e) => `<tr><td class="muted mono">${clock(e.ts)}</td><td><b>${esc(e.symbol)}</b></td><td class="wrap muted">${esc(e.reason)}</td><td class="muted">${esc(result(e))}</td></tr>`)
     .join('')}</tbody></table>`;
@@ -1479,7 +1482,7 @@ function guidePage(view) {
     .map(
       (/** @type {any} */ s) => `<tr class="link" data-href="#/rule/${esc(s.id)}">
         <td><span class="rule-name">${dot(s.id)}<b>${esc(s.codeName)}</b></span></td>
-        <td>${esc(ruleName(s.rule))}</td>
+        <td>${esc(ruleName(s.rule))}${s.skipCopycats ? '<span class="muted">, skips copycats</span>' : ''}</td>
         <td class="mono">${esc(exitsText(s.trade))}</td>
         <td class="muted">${s.retired ? 'retired' : ''}</td>
       </tr>`,
@@ -1517,6 +1520,7 @@ function guidePage(view) {
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale. The square icon beside the dot switches full screen on and off (Esc also leaves it).</p>
     <p><b>Buys and sells.</b> The chart marks every buy with a ringed B, at the moment it happened, and every sell with a filled S, green when the trade made money and red when it lost, each with the coin's ticker beside it (when tickers would overlap, some are left out). Hover anywhere on the chart to see the balances and the trades, with tickers, at that moment; move the mouse off the chart and the panel goes away.</p>
     <p><b>Hot now.</b> Top right: coins a strategy's rule fired on in the last 15 minutes, the ones the strategies are buying right now. Coins where more different rules agree come first (a fast and a slow version of one rule count once), then the best odds. The odds are measured, not guessed: how often that strategy's past paper trades reached its take profit before its stop loss or time limit, out of how many trades, next to its random picker's rate for comparison. Under 10 trades it says so instead of showing a rate. The percent on the right is how far the price has moved since the first signal, so you can see if you'd be late. Hover a coin for every strategy's numbers. It's there to point you at coins worth a look; you decide.</p>
+    <p id="rug-signs"><b>Warning tags.</b> Under a Hot now coin, in amber: <i>copycat</i> means another token with the same ticker was trading first (copies of a trending coin are a common rug pull, where the creator pulls the pool's money and the price goes to zero); <i>new pool</i> means the pool is under 2 hours old; <i>ticker rugged</i> means another pool with that ticker collapsed in the last 6 hours. They hide nothing and change no trades. Kestrel tests whether skipping copycats pays: it is Falcon with the same rule and exits, except it doesn't buy copycats, so compare the two. Two rug pulls is far too few to know yet.</p>
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
     <p id="turnover"><b>Turnover.</b> The last hour's trading volume as a share of the coin's market cap: 50% means half the coin's value changed hands in an hour. On the Coins page and each coin's page. Three labels follow a reading of how turnover and price move together. <b>Attention</b>: turnover at least ${share(st.turnover.high)}, trading at or above its usual pace, and price up ${share(st.turnover.flatPrice)} or more in the hour, meaning new buyers are absorbing sellers. <b>Distribution</b>: turnover at least ${share(st.turnover.high)} but price flat or down, meaning early holders may be selling into the hype. <b>Fading</b>: the last hour traded under ${st.turnover.falling}x the coin's usual hourly pace (its average over the last 6 hours) while the price holds, meaning attention is leaving. These cut-offs are first guesses. The Turnover check under the Coins page tests them: for every saved reading it looks at the price ${st.turnover.afterMin} minutes later, counting a coin at most once per label every ${st.turnover.spacingMin} minutes, and compares each label with all readings. Until a label clearly differs from "Any reading" over many coins, treat it as an idea, not as odds. No strategy trades on it.</p>

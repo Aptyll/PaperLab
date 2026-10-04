@@ -64,6 +64,7 @@ export function createServer({ store, config, signals, strategies, provider, app
     params: s.params,
     trade: { sizeUsd: s.trade.sizeUsd, stopLossPct: s.trade.stopLossPct, takeProfitPct: s.trade.takeProfitPct, timeLimitMin: s.trade.timeLimitMin },
     retired: s.retired,
+    skipCopycats: s.skipCopycats ?? false,
   }));
 
   /**
@@ -231,7 +232,22 @@ export function createServer({ store, config, signals, strategies, provider, app
         odds,
         priceNow: (pool) => store.latestSnapshot(pool)?.priceUsd ?? null,
       });
-      return { windowMin: HOT_WINDOW_MIN, coins: coins.slice(0, 8), more: Math.max(0, coins.length - 8) };
+      // Rug pull warning signs, shown beside a coin; nothing is hidden.
+      const warned = coins.slice(0, 8).map((c) => {
+        const snap = store.latestSnapshot(c.poolAddress);
+        /** @type {{kind: string, text: string}[]} */
+        const warnings = [];
+        if (snap) {
+          const first = store.copycatOf(snap.symbol, snap.tokenAddress, now);
+          if (first) warnings.push({ kind: 'copycat', text: `Copycat: another ${snap.symbol} token (…${first.tokenAddress.slice(-4)}) was trading first. Copycats of a trending coin are a common rug pull.` });
+          const ageMin = snap.poolCreatedAt ? (now - snap.poolCreatedAt) / 60_000 : null;
+          if (ageMin !== null && ageMin < 120) warnings.push({ kind: 'new', text: `New pool: created ${Math.max(1, Math.round(ageMin))} min ago.` });
+          const rugged = store.tickerCollapsedSince(snap.symbol, c.poolAddress, now - 6 * 3600_000);
+          if (rugged) warnings.push({ kind: 'rugged', text: `Another ${snap.symbol} pool collapsed ${Math.max(1, Math.round((now - rugged) / 60_000))} min ago (its money vanished).` });
+        }
+        return { ...c, warnings };
+      });
+      return { windowMin: HOT_WINDOW_MIN, coins: warned, more: Math.max(0, coins.length - 8) };
     }
     if (pathname === '/api/results') {
       const run = runOf(q);

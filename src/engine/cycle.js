@@ -209,7 +209,9 @@ export async function runCycle(deps) {
         runId,
       });
       result.signalEvents++;
-      const blocked = blockReason(store, st.id, snap.poolAddress, config, st.trade, ts, runId);
+      const blocked =
+        (st.skipCopycats && store.copycatOf(snap.symbol, snap.tokenAddress, ts) ? 'copycat' : null) ??
+        blockReason(store, st.id, snap.poolAddress, config, st.trade, ts, runId);
       if (blocked) {
         store.resolveSignalEvent(/** @type {number} */ (ev.id), null, blocked);
         continue;

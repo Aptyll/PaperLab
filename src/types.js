@@ -76,6 +76,7 @@
  * @property {Record<string, number>} [params]  Rule settings that differ from the rule's defaults.
  * @property {Partial<Pick<TradeRules, 'sizeUsd'|'stopLossPct'|'takeProfitPct'|'timeLimitMin'>>} [exits]
  * @property {boolean} [retired]  Stops buying; history stays.
+ * @property {boolean} [skipCopycats]  Don't buy a coin whose ticker another token was already trading under (see Store.copycatOf).
  */
 
 /**
@@ -87,6 +88,7 @@
  * @property {Record<string, number>} params
  * @property {TradeRules} trade
  * @property {boolean} retired
+ * @property {boolean} [skipCopycats]
  */
 
 /**
