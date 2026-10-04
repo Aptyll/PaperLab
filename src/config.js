@@ -38,7 +38,7 @@ export const DEFAULTS = {
   // Matches the live trading rules: only coins you could really trade.
   universe: { minLiquidityUsd: 100_000, minSellsM5: 1 },
   trade: {
-    sizeUsd: 50,
+    sizeUsd: 100,
     feeRate: 0.003,
     slippageRate: 0.015,
     maxChasePct: 0.05,

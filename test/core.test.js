@@ -226,7 +226,7 @@ test('cycle: a chased signal trade cancels its random twin too', async () => {
   price = 1.2;
   const r = await runCycle(deps);
   assert.deepEqual(r.cancelled.map((t) => t.cancelReason).sort(), ['chased', 'twin_cancelled']);
-  assert.equal(availableCashOf(store), 2000 - 50 * r.queued.length, 'cancelled trades cost nothing; only the new queue holds cash');
+  assert.equal(availableCashOf(store), 2000 - DEFAULTS.trade.sizeUsd * r.queued.length, 'cancelled trades cost nothing; only the new queue holds cash');
   store.close();
 });
 
@@ -395,7 +395,7 @@ test('runs: same rules continue, changed rules or costs start a new run', () => 
   assert.ok(!canContinue(withSignal, { ...base, strategies: { a: { ...a1, exits: { stopLossPct: 0.1 } } } }), "changing a strategy's exits starts a new run");
   assert.ok(canContinue(withSignal, { ...base, strategies: { a: a1, b: { ...a1, exits: { stopLossPct: 0.1 } } } }), 'a new code-name with other exits keeps the run');
   const legacy = { ...base, strategies: undefined, signals: { a: { x: 1 } }, trade: { ...base.trade, stopLossPct: 0.2 } };
-  assert.ok(canContinue(legacy, { ...base, trade: legacy.trade, strategies: { a: { ...a1, exits: { ...a1.exits, sizeUsd: 50, takeProfitPct: 0.4, timeLimitMin: 60 } } } }), 'runs recorded before strategies existed carry on');
+  assert.ok(canContinue(legacy, { ...base, trade: legacy.trade, strategies: { a: { ...a1, exits: { ...a1.exits, sizeUsd: DEFAULTS.trade.sizeUsd, takeProfitPct: 0.4, timeLimitMin: 60 } } } }), 'runs recorded before strategies existed carry on');
   assert.ok(!canContinue(base, { ...base, trade: { ...base.trade, feeRate: 0.01 } }), 'changing shared costs starts a new run');
   assert.ok(!canContinue(base, { ...base, engine: base.engine + 1 }));
 });
@@ -441,7 +441,7 @@ test('wilson interval and calibration', () => {
 test('verdict: too early, no edge, leaning, clear', () => {
   const trades = (/** @type {number[]} */ pcts) => pcts.map((p) => /** @type {any} */ ({ status: 'closed', pnlPct: p, pnlUsd: p * 50 }));
   const noisy = (/** @type {number} */ center, /** @type {number} */ n) => Array.from({ length: n }, (_, i) => center + (i % 2 ? 0.2 : -0.2));
-  assert.equal(verdict(trades(noisy(0.1, 10)), trades(noisy(0, 10))).label, 'too_early');
+  assert.equal(verdict(trades(noisy(0.1, 5)), trades(noisy(0, 5))).label, 'too_early');
   assert.equal(verdict(trades(noisy(-0.05, 30)), trades(noisy(0, 30))).label, 'no_edge');
   assert.equal(verdict(trades(noisy(0.05, 30)), trades(noisy(0, 30))).label, 'leaning');
   assert.equal(verdict(trades(noisy(0.2, 30)), trades(noisy(0, 30))).label, 'clear');
@@ -455,7 +455,7 @@ test('go-live checks follow the written rules', () => {
   const good = closed(Array.from({ length: 40 }, (_, i) => (i % 3 === 0 ? -0.2 : 0.3)));
   const byId = (/** @type {any[]} */ cs) => Object.fromEntries(cs.map((c) => [c.id, c.pass]));
   assert.deepEqual(byId(goLiveChecks(good, closed([0.01, -0.02]), window)), {
-    trades: true, profit: true, random: true, average: true, best: true, halves: true,
+    profit: true, random: true, average: true, best: true, halves: true,
   });
   const lucky = closed([...Array(30).fill(-0.05), 20]);
   const c = byId(goLiveChecks(lucky, [], window));

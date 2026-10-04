@@ -23,7 +23,7 @@ On Windows, `launcher/windows/Create desktop icon.cmd` adds a Paper Lab desktop 
 ## Screens
 
 - **Top bar**: the portfolio number (the average balance of the active strategies, including open trades) and the live-data dot (green fresh, red stale, grey off; click for the menu).
-- **Scoreboard** (home): one compact card per active strategy, sorted by status, and the balance chart filling the rest of the screen. The big number is how far the strategy is ahead of its random picker; the status line reads Warming up · n/30, Not ready · k/6 checks, Behind random, Ready · could be luck, or Ready (hover for the six checks). The chart has a solid line per strategy and one grey dashed line averaging their random pickers, on an even time axis in local time; the latest buys (▲) and sells (▼) are marked on the lines and listed with tickers in the chart's corner, and hovering shows the balances and trades at that moment. Scroll down for the Trades panel and Best coins (every coin the strategies bought this run, ranked by profit including open trades).
+- **Scoreboard** (home): one compact card per active strategy, most profit on the left, each in its chart color. The big number is the strategy's profit (open trades counted as if sold now); under it, how far it is ahead of its random picker on finished trades. Hover a card for its rule, exits, balance, win rate and go-live checks. The chart has a solid line per strategy and one grey dashed line averaging their random pickers, on an even time axis in local time; the latest buys (▲) and sells (▼) are marked on the lines and listed with tickers in the chart's corner, and hovering shows the balances and trades at that moment. Scroll down for the Trades panel and Best coins (every coin the strategies bought this run, ranked by profit including open trades).
 - **Strategy page** (`#/rule/<id>`): code-name, rule and exits; balance vs its random picker, the go-live checks and verdict, open and closed trades with the reason each one fired.
 - **Coins**: Our coins (the same ranking, all of it) and the trending list. Coins below the liquidity floor are dimmed; dots show which strategies hold a coin. Click one for its price chart with every buy and sell marked.
 - **Guide**: every explanation in plain words, with numbers taken from the current settings, the strategy list, and past runs (click one to view it).
@@ -36,10 +36,10 @@ Every 60 seconds:
 2. **Store** a snapshot per pool: price, market cap (or FDV when missing), liquidity, volume (5m/1h/6h/24h), buys/sells and unique buyers/sellers (5m/1h/24h), and pool creation time.
 3. **Fill** trades queued at the previous check, at this check's price, the way a person copying a signal by hand would buy about a minute later. If the price has already risen more than 5% since the signal, the trade is cancelled instead (cancelled trades cost nothing and are left out of results).
 4. **Close** open trades that hit stop loss (-20%), take profit (+40%) or the 60 minute limit. Prices are checked once per poll, so a fill happens at the observed price, which can be past the level. If a coin's pool loses more than 80% of its liquidity while held, the trade closes as **collapsed** and sells into what is left, which is usually a near-total loss.
-5. **Run signals** on every trending pool with at least **$100K liquidity** and at least one sell in the last 5 minutes (a guard against coins that can be bought but not sold). These match the live trading rules. When a signal fires it queues a $50 paper trade, unless that signal already holds the token, closed it in the last 30 minutes, or is out of cash.
+5. **Run signals** on every trending pool with at least **$100K liquidity** and at least one sell in the last 5 minutes (a guard against coins that can be bought but not sold). These match the live trading rules. When a signal fires it queues a $100 paper trade, unless that signal already holds the token, closed it in the last 30 minutes, or is out of cash.
 6. **Random twin.** Each time a signal queues a trade, that signal's random twin queues one on a randomly chosen token from the same filtered list, with the same size, costs, timing and exits. If the signal's trade is cancelled, so is the twin's. Every signal and every twin has its own $1,000. The scoreboard (home screen) shows each signal's "edge" over its twin and a verdict: too early, no edge, leaning, or clear.
 
-Costs per trade, each way: 0.3% DEX fee, 1.5% execution slippage (delay, bots), and price impact from the pool's depth (constant-product math: $50 into a $100K pool costs about 0.1% more, into a $20K pool about 0.5%). Before impact, a token has to rise about 3.7% just to break even.
+Costs per trade, each way: 0.3% DEX fee, 1.5% execution slippage (delay, bots), and price impact from the pool's depth (constant-product math: $100 into a $100K pool costs about 0.2% more, into a $20K pool about 1%). Before impact, a token has to rise about 3.7% just to break even.
 
 **Runs.** Every set of trading rules is its own run. If you change a shared setting (costs, the coin filter, the bankroll), a strategy's settings, or update to a version that simulates trades differently, a new run starts with fresh $1,000 books, and trades still open from the old run finish under their old rules. Earlier runs stay in the database: open one from the Guide page to see its scoreboard exactly as it ended. Adding or retiring a strategy, or adding a signal file, does not start a new run.
 
@@ -67,7 +67,7 @@ Copy what you want to change into `config.local.json` (git-ignored). Example:
 ```json
 {
   "pollIntervalSec": 60,
-  "trade": { "sizeUsd": 50, "stopLossPct": 0.2, "takeProfitPct": 0.4, "timeLimitMin": 60 },
+  "trade": { "sizeUsd": 100, "stopLossPct": 0.2, "takeProfitPct": 0.4, "timeLimitMin": 60 },
   "universe": { "minLiquidityUsd": 100000, "minSellsM5": 1 },
   "signalParams": { "volume-spike": { "minMultiple": 4 } }
 }

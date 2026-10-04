@@ -53,7 +53,8 @@ export function summarize(trades) {
 }
 
 /** Closed trades needed before a verdict means anything. Matches go-live rule 1. */
-export const MIN_TRADES_FOR_VERDICT = 30;
+/** Below this the luck test can't say anything useful. Only the luck test uses it; nothing waits on a trade count. */
+export const MIN_TRADES_FOR_VERDICT = 10;
 
 /**
  * @typedef {'too_early'|'no_edge'|'leaning'|'clear'} VerdictLabel
@@ -152,10 +153,10 @@ export function verdict(rule, twin, tested = 1) {
  */
 
 /** Thresholds from the go-live rules (go-live-rules.md, part 2). */
-export const GO_LIVE = { minTrades: MIN_TRADES_FOR_VERDICT, minAvgPct: 0.05, paperRunMs: 3 * 3600_000, maxGapMs: 5 * 60_000 };
+export const GO_LIVE = { minAvgPct: 0.05, paperRunMs: 3 * 3600_000, maxGapMs: 5 * 60_000 };
 
 /**
- * The six go-live checks for one rule, over its closed trades.
+ * The five go-live checks for one rule (Noah dropped the 30-trade minimum: he decides when it's enough), over its closed trades.
  * "Both halves" splits the run's active window at its midpoint in time.
  *
  * @param {PaperTrade[]} rule   Closed trades of the rule.
@@ -175,7 +176,6 @@ export function goLiveChecks(rule, twin, window) {
   const first = sum(rule.filter((t) => (t.closedAt ?? 0) < mid));
   const second = sum(rule.filter((t) => (t.closedAt ?? 0) >= mid));
   return [
-    { id: 'trades', label: `At least ${GO_LIVE.minTrades} closed trades`, pass: n >= GO_LIVE.minTrades, detail: `${n} closed` },
     { id: 'profit', label: 'Total profit is positive', pass: n > 0 && pnl > 0, detail: money(pnl) },
     { id: 'random', label: 'Made more than its random picker', pass: n > 0 && pnl > twinPnl, detail: `${money(pnl)} vs ${money(twinPnl)}` },
     {

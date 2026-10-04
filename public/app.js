@@ -149,42 +149,41 @@ async function getJson(url) {
 
 // ---------- status of one strategy ----------
 
-const NEED_TRADES = 30;
-
 /** Profit minus its random picker's profit, closed trades. @param {any} r */
 const edgeUsd = (r) => r.all.pnlUsd - r.twin.all.pnlUsd;
 
+/** Profit so far, open trades counted as if sold now. @param {any} r */
+const pnlOf = (r) => r.equityUsd - (state.results?.startingBankrollUsd ?? 1000);
+
 /**
- * One status instead of verdict, check pips and trade bar.
+ * Where a strategy stands on the go-live checks, in a few words. There is no
+ * trade minimum: Noah decides when there are enough.
  * @param {any} r
- * @returns {{key: string, text: string, cls: string, fill: number, rank: number}}
+ * @returns {{key: string, text: string, cls: string, fill: number}}
  */
 function statusOf(r) {
   const checks = r.checks ?? [];
   const passed = checks.filter((/** @type {any} */ c) => c.pass).length;
-  if (r.all.closed < NEED_TRADES) {
-    return { key: 'warming', text: `Warming up · ${r.all.closed}/${NEED_TRADES}`, cls: '', fill: r.all.closed / NEED_TRADES, rank: 3 };
-  }
   if (checks.length && passed === checks.length) {
     return r.verdict?.label === 'clear'
-      ? { key: 'ready', text: 'Ready', cls: 'pos', fill: 1, rank: 0 }
-      : { key: 'ready', text: 'Ready · could be luck', cls: 'warn', fill: 1, rank: 1 };
+      ? { key: 'ready', text: 'Ready', cls: 'pos', fill: 1 }
+      : { key: 'ready', text: 'Ready · could be luck', cls: 'warn', fill: 1 };
   }
   const fill = checks.length ? passed / checks.length : 0;
-  if (r.verdict?.label === 'no_edge') return { key: 'behind', text: 'Behind random', cls: 'neg', fill, rank: 4 };
-  return { key: 'not-ready', text: `Not ready · ${passed}/${checks.length} checks`, cls: '', fill, rank: 2 };
+  if (r.verdict?.label === 'no_edge') return { key: 'behind', text: 'Behind random', cls: 'neg', fill };
+  return { key: 'not-ready', text: `Not ready · ${passed}/${checks.length} checks`, cls: '', fill };
 }
 
-/** The six checks, for hover text. @param {any} r */
+/** The go-live checks, for hover text. @param {any} r */
 const checksTip = (r) =>
   ['Go-live checks', ...(r.checks ?? []).map((/** @type {any} */ x) => `${x.pass ? '✓' : '✗'} ${x.label} (${x.detail})`)].join('\n');
 
 // ---------- which strategies show ----------
 
-/** Results of the active (not retired) strategies, best status first. @param {any[]} rows */
+/** Results of the active (not retired) strategies, most profit first. @param {any[]} rows */
 function shownStrategies(rows) {
   const keep = rows.filter((r) => r.strategy !== 'random' && !(strategyOf(r.strategy)?.retired ?? false));
-  return keep.sort((a, b) => statusOf(a).rank - statusOf(b).rank || edgeUsd(b) - edgeUsd(a));
+  return keep.sort((a, b) => b.equityUsd - a.equityUsd);
 }
 
 // ---------- top bar ----------
@@ -614,9 +613,9 @@ function priceChart(el, snapshots, trades) {
 
 // ---------- shared pieces ----------
 
-// The HUD reads top to bottom by importance: how far each strategy is ahead
-// of random (largest, brightest), one status with a thin bar, then everything
-// else, quieter or folded away. Explanations live on the Guide page.
+// The HUD reads top to bottom by importance: each strategy's profit
+// (largest, brightest), in its chart color, then how it compares with random.
+// Everything else is in the card's hover text; explanations live on the Guide.
 
 /** Big number: how far ahead of random. Whole dollars on cards, cents on the strategy page. @param {any} r */
 function heroNumber(r, cents = false) {
@@ -634,14 +633,32 @@ function statusLine(r) {
     <div class="bar ${st.cls}"><span style="width:${(Math.min(1, st.fill) * 100).toFixed(1)}%"></span></div>`;
 }
 
+/** Whole signed dollars, e.g. "+$83", "−$12", "$0". @param {number} n */
+const signedDollars = (n) => (Math.round(n) === 0 ? '$0' : `${n > 0 ? '+' : '−'}${dollars(Math.abs(n))}`);
+
+/** Card details that would clutter the card, for its hover text. @param {any} r */
+function cardTip(r) {
+  const s = strategyOf(r.strategy);
+  const open = r.open + r.pending;
+  return [
+    `${nameOf(r.strategy)}${s ? ` · ${ruleName(s.rule)} · ${exitsText(s.trade)}` : ''}`,
+    `Balance ${dollars(r.equityUsd)} (open trades counted as if sold now)`,
+    `${money(edgeUsd(r))} vs its random picker (finished trades)`,
+    `${r.all.closed} finished${r.all.closed ? `, ${share(r.all.winRate)} won` : ''}${open ? ` · ${open} open` : ''}`,
+    '',
+    statusOf(r).text,
+    ...(r.checks ?? []).map((/** @type {any} */ x) => `${x.pass ? '✓' : '✗'} ${x.label} (${x.detail})`),
+  ].join('\n');
+}
+
 /** @param {any} r */
 function strategyCard(r) {
-  const s = strategyOf(r.strategy);
-  return `<a class="card" href="#/rule/${esc(r.strategy)}" style="--c:${colorOf(r.strategy)}">
-    <div class="card-name">${dot(r.strategy)}<b>${esc(nameOf(r.strategy))}</b></div>
-    <div class="card-rule">${esc(s ? ruleName(s.rule) : '')}</div>
-    ${heroNumber(r)}
-    ${statusLine(r)}
+  const p = pnlOf(r);
+  const e = edgeUsd(r);
+  return `<a class="card" href="#/rule/${esc(r.strategy)}" style="--c:${colorOf(r.strategy)}" title="${esc(cardTip(r))}">
+    <div class="card-name">${esc(nameOf(r.strategy))}</div>
+    <div class="hero ${tone(Math.round(p))}">${signedDollars(p)}</div>
+    <div class="card-sub"><span class="${tone(Math.round(e))}">${signedDollars(e)}</span> vs random</div>
   </a>`;
 }
 
@@ -857,7 +874,7 @@ async function rulePage(view, id) {
       </div>
     </div>
 
-    ${panel('rule-checks', `Go-live checks <span class="count">${r.checks.filter((/** @type {any} */ c) => c.pass).length}/6</span>`, verdictLine + checks, false)}
+    ${panel('rule-checks', `Go-live checks <span class="count">${r.checks.filter((/** @type {any} */ c) => c.pass).length}/${r.checks.length}</span>`, verdictLine + checks, false)}
     ${panel('rule-balance', `Balance <span class="key-dash" title="Dashed line: its random picker"></span>`, '<div class="chart-box"><div class="chart" id="balance"></div></div>')}
     ${panel('rule-open', `Open <span class="count">${active.length}</span>`, tradeRows(active, { showWhy: true }))}
     ${panel('rule-closed', `Closed <span class="count">${closed.length}</span>`, tradeRows(closed, { showWhy: true }))}
@@ -1015,8 +1032,8 @@ function guidePage(view) {
     <ul>${st.signals.map((/** @type {any} */ s) => `<li><b>${esc(s.name)}:</b> ${esc(ruleText(s))}</li>`).join('')}</ul>
     <p><b>Strategies.</b> A strategy is a code-name, one rule, and its own selling numbers. Settings never change under a code-name; trying new numbers means a new code-name, and a retired one stops buying but keeps its history.</p>
     <table class="t compact guide-table"><thead><tr><th>Code-name</th><th>Rule</th><th>Stop / target / time</th><th></th></tr></thead><tbody>${strategies}</tbody></table>
-    <p><b>Reading a card.</b> The big number is how many dollars the strategy is ahead of (or behind) its random picker. The status says where it is: Warming up (fewer than 30 finished trades, too early to judge), Not ready (some go-live checks fail), Behind random, Ready but could be luck, or Ready. Hover the status to see the checks.</p>
-    <p><b>The six go-live checks.</b> At least 30 finished trades · total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run.</p>
+    <p><b>Reading a card.</b> Cards are in the same color as their line on the chart, most profit on the left. The big number is the strategy's profit so far, open trades counted as if sold now. Under it: how many dollars it is ahead of (or behind) its random picker on finished trades. Hover a card for its rule, balance, win rate and go-live checks.</p>
+    <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
     <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Lines move when trades finish.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>

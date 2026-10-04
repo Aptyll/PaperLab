@@ -179,7 +179,16 @@ table.t.compact td { padding: 5px 10px; }
   overflow: hidden;
   transition: border-color 0.15s;
 }
-.card:hover { text-decoration: none; border-color: #3a3c43; }
+.card {
+  border-color: color-mix(in srgb, var(--c) 45%, var(--border));
+  background: color-mix(in srgb, var(--c) 9%, var(--surface-1));
+  border-top: 3px solid var(--c);
+}
+.card:hover { text-decoration: none; border-color: color-mix(in srgb, var(--c) 80%, var(--border)); border-top-color: var(--c); }
+.card-name { color: var(--c); font-weight: 700; }
+.card .hero { margin: 6px 0 4px; }
+.card-sub { color: var(--text-muted); font: 11px var(--sans); }
+.card-sub span { font: 600 12px var(--mono); }
 .card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-secondary); font-size: 12px; }
 .card-name { display: flex; align-items: center; gap: 7px; font-size: 14px; }
 .card-name b { font-weight: 600; }
@@ -199,7 +208,6 @@ table.t.compact td { padding: 5px 10px; }
 .bar.warn > span { background: var(--warning); opacity: 1; }
 .bar.neg > span { background: var(--critical); opacity: 0.8; }
 .card-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
-.card-sub { color: var(--text-muted); font: 11px var(--mono); }
 .tag { font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; padding: 1px 6px; border-radius: 3px; color: var(--text-muted); background: var(--surface-2); }
 
 .rule-hero { position: relative; display: flex; gap: 24px; align-items: center; justify-content: space-between; flex-wrap: wrap; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px 18px; overflow: hidden; margin-bottom: 14px; }
