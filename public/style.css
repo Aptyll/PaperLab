@@ -328,3 +328,25 @@ table.t.trades { max-width: 760px; }
 .chart-tip .tip-row b { font: 600 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--text-primary); }
 .chart-tip .tip-row b.pos { color: var(--good); }
 .chart-tip .tip-row b.neg { color: var(--critical); }
+.coin-rank td.big { font-size: 13px; font-weight: 600; }
+.coin-rank { max-width: 760px; }
+.more { font-size: 12px; padding: 6px 10px; }
+.trending-head { margin-top: 28px; }
+.page-head .muted { font-size: 12px; }
+.chart-tip .tip-trades { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
+.chart-tip .tip-kind { font-size: 10px; width: 10px; }
+.chart-tip .sym { color: var(--text-primary); font: 600 12px var(--sans); }
+.chart-feed { position: absolute; top: 10px; left: 12px; z-index: 3; pointer-events: none; min-width: 190px; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--bg) 70%, transparent); }
+.chart-feed[hidden] { display: none; }
+.chart-feed .tip-row { display: flex; justify-content: space-between; gap: 14px; padding: 1px 0; color: var(--text-secondary); cursor: default; }
+.chart-feed .tip-row b { font: 600 12px var(--mono); }
+.chart-feed .tip-row b.pos { color: var(--good); }
+.chart-feed .tip-row b.neg { color: var(--critical); }
+.chart-feed .tip-row:nth-child(2) { opacity: 0.85; }
+.chart-feed .tip-row:nth-child(3) { opacity: 0.7; }
+.chart-feed .tip-row:nth-child(4) { opacity: 0.55; }
+.chart-feed .tip-row:nth-child(5) { opacity: 0.4; }
+.chart-feed .sym { color: var(--text-primary); font: 600 12px var(--sans); }
+.chart-feed .tip-kind { font-size: 10px; width: 10px; }
+.more-btn { margin: 8px 0 0 10px; }
+@media (max-width: 700px) { .chart-feed { display: none; } }

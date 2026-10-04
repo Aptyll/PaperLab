@@ -23,9 +23,9 @@ On Windows, `launcher/windows/Create desktop icon.cmd` adds a Paper Lab desktop 
 ## Screens
 
 - **Top bar**: the portfolio number (the average balance of the active strategies, including open trades) and the live-data dot (green fresh, red stale, grey off; click for the menu).
-- **Scoreboard** (home): one compact card per active strategy, sorted by status, and the balance chart filling the rest of the screen. The big number is how far the strategy is ahead of its random picker; the status line reads Warming up · n/30, Not ready · k/6 checks, Behind random, Ready · could be luck, or Ready (hover for the six checks). The chart has a solid line per strategy and one grey dashed line averaging their random pickers. Scroll down for the Trades panel.
+- **Scoreboard** (home): one compact card per active strategy, sorted by status, and the balance chart filling the rest of the screen. The big number is how far the strategy is ahead of its random picker; the status line reads Warming up · n/30, Not ready · k/6 checks, Behind random, Ready · could be luck, or Ready (hover for the six checks). The chart has a solid line per strategy and one grey dashed line averaging their random pickers, on an even time axis in local time; the latest buys (▲) and sells (▼) are marked on the lines and listed with tickers in the chart's corner, and hovering shows the balances and trades at that moment. Scroll down for the Trades panel and Best coins (every coin the strategies bought this run, ranked by profit including open trades).
 - **Strategy page** (`#/rule/<id>`): code-name, rule and exits; balance vs its random picker, the go-live checks and verdict, open and closed trades with the reason each one fired.
-- **Coins**: the trending list. Coins below the liquidity floor are dimmed; dots show which strategies hold a coin. Click one for its price chart with every buy and sell marked.
+- **Coins**: Our coins (the same ranking, all of it) and the trending list. Coins below the liquidity floor are dimmed; dots show which strategies hold a coin. Click one for its price chart with every buy and sell marked.
 - **Guide**: every explanation in plain words, with numbers taken from the current settings, the strategy list, and past runs (click one to view it).
 
 ## How it works

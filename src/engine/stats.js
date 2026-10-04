@@ -282,6 +282,57 @@ export function strategyResults({ trades, strategies, startingBankroll, latestPr
   return [...rows, randomRow];
 }
 
+/**
+ * @typedef {Object} CoinResult
+ * @property {string} poolAddress
+ * @property {string} symbol
+ * @property {string[]} strategies  Strategies that bought it, first buyer first.
+ * @property {number} trades        Filled trades (open and closed).
+ * @property {number} open
+ * @property {number} closed
+ * @property {number} wins          Closed with a profit.
+ * @property {number} realizedUsd   Profit from closed trades.
+ * @property {number} openUsd       What the open trades would make if sold now (null price: counted as 0).
+ * @property {number} pnlUsd        realizedUsd + openUsd.
+ * @property {number} lastAt        Latest buy or sell.
+ */
+
+/**
+ * How each coin did for the strategies (random pickers left out), best first.
+ * Open trades are valued like the balances are: sold now, after costs.
+ * @param {PaperTrade[]} trades
+ * @param {(poolAddress: string) => {price: number, liquidityUsd: number|null}|null} latestPrice
+ * @returns {CoinResult[]}
+ */
+export function coinResults(trades, latestPrice) {
+  /** @type {Map<string, CoinResult>} */
+  const coins = new Map();
+  const filled = trades
+    .filter((t) => t.strategy !== RANDOM_STRATEGY && t.openedAt !== null && (t.status === 'open' || t.status === 'closed'))
+    .sort((a, b) => (a.openedAt ?? 0) - (b.openedAt ?? 0));
+  for (const t of filled) {
+    let c = coins.get(t.poolAddress);
+    if (!c) {
+      c = { poolAddress: t.poolAddress, symbol: t.symbol, strategies: [], trades: 0, open: 0, closed: 0, wins: 0, realizedUsd: 0, openUsd: 0, pnlUsd: 0, lastAt: 0 };
+      coins.set(t.poolAddress, c);
+    }
+    if (!c.strategies.includes(t.strategy)) c.strategies.push(t.strategy);
+    c.trades++;
+    c.lastAt = Math.max(c.lastAt, t.closedAt ?? t.openedAt ?? 0);
+    if (t.status === 'closed') {
+      c.closed++;
+      c.realizedUsd += t.pnlUsd ?? 0;
+      if ((t.pnlUsd ?? 0) > 0) c.wins++;
+    } else {
+      c.open++;
+      const m = latestPrice(t.poolAddress);
+      if (m !== null) c.openUsd += liquidationValue(t, m.price, m.liquidityUsd).proceedsUsd - t.sizeUsd;
+    }
+  }
+  for (const c of coins.values()) c.pnlUsd = c.realizedUsd + c.openUsd;
+  return [...coins.values()].sort((a, b) => b.pnlUsd - a.pnlUsd || b.lastAt - a.lastAt);
+}
+
 /** @param {PaperTrade[]} trades */
 function spanOf(trades) {
   const ts = trades.flatMap((t) => [t.signalAt, t.closedAt ?? t.signalAt]);

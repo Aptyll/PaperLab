@@ -26,6 +26,7 @@ const state = {
   /** @type {Record<string, string>} */ colors: {},
   /** @type {any[]} */ charts: [],
   /** @type {number|null} Past run being viewed; null means the current run. */ viewRun: null,
+  /** Coins page: list every coin bought, not just the best 15. */ allCoins: false,
 };
 
 /** @param {string} k */
@@ -326,6 +327,18 @@ function destroyCharts() {
   state.charts = [];
 }
 
+/**
+ * Axis labels in the computer's own time zone (the chart library would show UTC).
+ * @param {number} t  seconds  @param {number} type  0 year, 1 month, 2 day, 3 time, 4 time with seconds
+ */
+function localTick(t, type) {
+  const d = new Date(t * 1000);
+  if (type === 0) return String(d.getFullYear());
+  if (type === 1) return d.toLocaleDateString([], { month: 'short' });
+  if (type === 2) return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
 /** @param {HTMLElement} el @param {(v: any) => string} [priceFormatter] */
 function baseChart(el, priceFormatter = price) {
   const chart = LWC.createChart(el, {
@@ -339,7 +352,7 @@ function baseChart(el, priceFormatter = price) {
     },
     grid: { vertLines: { visible: false }, horzLines: { color: '#1b1d21' } },
     rightPriceScale: { borderVisible: false },
-    timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+    timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, tickMarkFormatter: localTick },
     crosshair: { mode: 0 },
     localization: { priceFormatter, timeFormatter: (/** @type {number} */ t) => new Date(t * 1000).toLocaleString() },
   });
@@ -374,17 +387,14 @@ function averageCurve(curves, start) {
   });
 }
 
-/** A line's balance at a moment: its latest point at or before it. @param {{time: number, value: number}[]} data @param {number} time */
-function valueAt(data, time) {
-  let lo = 0;
-  let hi = data.length - 1;
-  if (hi < 0 || data[0].time > time) return undefined;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (data[mid].time <= time) lo = mid;
-    else hi = mid - 1;
+/** A book's balance at a moment: its latest change at or before it. @param {{t: number, v: number}[]} pts @param {number} t */
+function balanceAt(pts, t) {
+  let v = pts[0].v;
+  for (const p of pts) {
+    if (p.t > t) break;
+    v = p.v;
   }
-  return data[lo].value;
+  return v;
 }
 
 /** The chart's time span: from the run's start to now, or to the run's last activity for a past run. @param {any} res */
@@ -393,10 +403,42 @@ function chartSpan(res) {
 }
 
 /**
+ * @typedef {Object} ChartLine
+ * @property {string} color
+ * @property {any[]} curve        [{t, equity}] at each close, oldest first.
+ * @property {boolean} dashed     The random pickers' line.
+ * @property {string} label
+ * @property {any[]} [trades]     This line's trades, for buy and sell marks.
+ */
+
+/** Linear value of a curve at time t. @param {{t: number, v: number}[]} pts @param {number} t */
+function interpolate(pts, t) {
+  let lo = 0;
+  let hi = pts.length - 1;
+  if (t <= pts[0].t) return pts[0].v;
+  if (t >= pts[hi].t) return pts[hi].v;
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1;
+    if (pts[mid].t <= t) lo = mid;
+    else hi = mid;
+  }
+  const a = pts[lo];
+  const b = pts[hi];
+  return b.t === a.t ? b.v : a.v + ((b.v - a.v) * (t - a.t)) / (b.t - a.t);
+}
+
+/** Only the latest buys and sells get a mark, so the chart stays readable; hovering shows any moment's. */
+const CHART_MARKS = 12;
+/** The latest few also scroll by in the chart's corner, with tickers, like a game's kill feed. */
+const FEED_ITEMS = 5;
+
+/**
  * Balance over time, one line per book. Every line starts at the bankroll when
  * the run starts and is carried flat to the end, so all lines share both edges.
+ * The chart library spaces points evenly, so every line is sampled on one even
+ * time grid: equal widths mean equal time.
  * @param {HTMLElement} el
- * @param {{color: string, curve: any[], dashed: boolean, label: string}[]} lines
+ * @param {ChartLine[]} lines
  * @param {number} start  Bankroll every book starts with.
  * @param {{from?: number|null, to?: number|null}} [span]  Run start and end, ms.
  */
@@ -406,8 +448,18 @@ function balanceChart(el, lines, start, span = {}) {
     return;
   }
   const times = lines.flatMap((l) => l.curve.map((p) => p.t));
-  const from = Math.min(span.from ?? Infinity, ...times) - 1000;
-  const to = Math.max(span.to ?? -Infinity, ...times);
+  const from = Math.min(span.from ?? Infinity, ...times);
+  const to = Math.max(span.to ?? -Infinity, ...times, from + 60_000);
+  const steps = Math.min(800, Math.max(2, Math.ceil((to - from) / 15_000)));
+  const stepMs = (to - from) / steps;
+  /** @type {number[]} Grid times in whole seconds, strictly increasing. */
+  const grid = [];
+  for (let i = 0; i <= steps; i++) {
+    const sec = Math.floor((from + i * stepMs) / 1000);
+    if (!grid.length || sec > grid[grid.length - 1]) grid.push(sec);
+  }
+  const gridIndex = (/** @type {number} */ ms) => Math.max(0, Math.min(grid.length - 1, Math.round((ms - from) / stepMs)));
+
   const fmt = (/** @type {number} */ v) => dollars(v);
   const chart = baseChart(el, fmt);
   chart.applyOptions({
@@ -421,7 +473,20 @@ function balanceChart(el, lines, start, span = {}) {
     },
     handleScale: { axisPressedMouseMove: false },
   });
-  /** @type {{series: any, line: typeof lines[number], data: {time: number, value: number}[]}[]} */
+
+  // Buy and sell events, newest first.
+  /** @type {{t: number, sell: boolean, line: ChartLine, trade: any}[]} */
+  const events = [];
+  for (const l of lines) {
+    for (const t of l.trades ?? []) {
+      if (t.openedAt && t.openedAt >= from) events.push({ t: t.openedAt, sell: false, line: l, trade: t });
+      if (t.closedAt && t.status === 'closed') events.push({ t: t.closedAt, sell: true, line: l, trade: t });
+    }
+  }
+  events.sort((a, b) => b.t - a.t);
+  const marked = new Set(events.slice(0, CHART_MARKS));
+
+  /** @type {{series: any, line: ChartLine, real: {t: number, v: number}[]}[]} */
   const drawn = [];
   // Random line first, so the strategies draw on top of it.
   for (const l of [...lines].sort((a, b) => Number(b.dashed) - Number(a.dashed))) {
@@ -435,15 +500,40 @@ function balanceChart(el, lines, start, span = {}) {
       priceFormat: { type: 'custom', formatter: fmt, minMove: 0.01 },
     });
     const last = l.curve.length ? l.curve[l.curve.length - 1].equity : start;
-    const data = toSeries([{ t: from, v: start }, ...l.curve.map((p) => ({ t: p.t, v: p.equity })), { t: to, v: last }]);
-    series.setData(data);
-    drawn.push({ series, line: l, data });
+    const real = [{ t: from, v: start }, ...l.curve.map((p) => ({ t: p.t, v: p.equity })), { t: to, v: last }];
+    series.setData(grid.map((sec) => ({ time: sec, value: interpolate(real, sec * 1000) })));
+    const marks = events
+      .filter((e) => e.line === l && marked.has(e))
+      .map((e) => ({
+        time: grid[gridIndex(e.t)],
+        position: e.sell ? 'aboveBar' : 'belowBar',
+        shape: e.sell ? 'arrowDown' : 'arrowUp',
+        color: l.color,
+        size: 1,
+      }))
+      .sort((a, b) => a.time - b.time);
+    if (marks.length) LWC.createSeriesMarkers(series, marks);
+    drawn.push({ series, line: l, real });
   }
   // Where every book started: a faint reference line at the bankroll.
   drawn[0].series.createPriceLine({ price: start, color: css('--chart-start'), lineWidth: 1, lineStyle: 1, axisLabelVisible: false, title: '' });
   chart.timeScale().fitContent();
 
-  // Hover: one quiet panel with every line's balance at that moment, best first.
+  /** @param {typeof events[number]} e */
+  const eventRow = (e) =>
+    `<div class="tip-row"><span class="rule-name"><span class="tip-kind" style="color:${e.line.color}">${e.sell ? '▼' : '▲'}</span><b class="sym">${esc(e.trade.symbol)}</b><span class="muted">${esc(e.line.label)}</span></span>${
+      e.sell ? `<b class="${tone(e.trade.pnlPct)}">${pct(e.trade.pnlPct, 0)}</b>` : '<span class="muted">buy</span>'
+    }</div>`;
+  const feed = document.createElement('div');
+  feed.className = 'chart-feed';
+  feed.innerHTML = events
+    .slice(0, FEED_ITEMS)
+    .map(eventRow)
+    .join('');
+  if (events.length) el.parentElement?.appendChild(feed);
+
+  // Hover: one quiet panel with every line's balance at that moment, best
+  // first, then the buys and sells right under the cursor.
   const tip = document.createElement('div');
   tip.className = 'chart-tip';
   tip.hidden = true;
@@ -451,19 +541,24 @@ function balanceChart(el, lines, start, span = {}) {
   chart.subscribeCrosshairMove((/** @type {any} */ p) => {
     if (!p?.time || !p.point || p.point.x < 0) {
       tip.hidden = true;
+      feed.hidden = false;
       return;
     }
+    feed.hidden = true;
+    const ms = p.time * 1000;
     const rows = drawn
-      .flatMap((d) => {
-        const v = valueAt(d.data, p.time);
-        return v === undefined ? [] : [{ line: d.line, v }];
-      })
+      .map((d) => ({ line: d.line, v: balanceAt(d.real, ms) }))
       .sort((a, b) => Number(a.line.dashed) - Number(b.line.dashed) || b.v - a.v);
-    tip.innerHTML = `<div class="tip-time">${esc(new Date(p.time * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</div>${rows
+    const ts = chart.timeScale();
+    const near = (/** @type {number} */ dx) => ts.coordinateToTime(p.point.x + dx);
+    const lo = (near(-6) ?? p.time) * 1000 - stepMs / 2;
+    const hi = (near(6) ?? p.time) * 1000 + stepMs / 2;
+    const here = events.filter((e) => e.t >= lo && e.t <= hi).slice(0, 6);
+    tip.innerHTML = `<div class="tip-time">${esc(new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</div>${rows
       .map(
         (r) => `<div class="tip-row${r.line.dashed ? ' muted' : ''}"><span class="rule-name">${r.line.dashed ? '<span class="key-dash"></span>' : `<span class="dot" style="background:${r.line.color}"></span>`}${esc(r.line.label)}</span><b class="${r.line.dashed ? '' : tone(r.v - start)}">${dollars(r.v)}</b></div>`,
       )
-      .join('')}`;
+      .join('')}${here.length ? `<div class="tip-trades">${here.map(eventRow).join('')}</div>` : ''}`;
     tip.hidden = false;
     // Keep the panel on the side away from the cursor.
     const left = p.point.x < el.clientWidth / 2;
@@ -589,9 +684,12 @@ function tradeRows(trades, opts = {}) {
 /** @param {HTMLElement} view */
 async function scoreboardPage(view) {
   const res = state.results;
-  const trades = await getJson(forRun('/api/trades?limit=300'));
   const rows = shownStrategies(res.strategies);
   const ids = new Set(rows.map((r) => r.strategy));
+  const [trades, coins] = await Promise.all([
+    getJson(forRun('/api/trades?limit=5000')),
+    getJson(forRun(`/api/coin-results?strategies=${encodeURIComponent([...ids].join(','))}`)),
+  ]);
   const mine = trades.filter((/** @type {any} */ t) => t.strategy !== 'random' && ids.has(t.strategy));
   const openCount = mine.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending').length;
   const offNow = !state.status.live && state.viewRun === null;
@@ -607,17 +705,50 @@ async function scoreboardPage(view) {
       </div>
     </div>
     ${panel('trades', `Trades <span class="count">${openCount ? `${openCount} open` : ''}</span>`, tradesList(mine), false)}
+    ${panel('best-coins', `Best coins <span class="count">${coins.length}</span>`, coinTable(coins, 10))}
     ${calibrationBlock(res.calibration)}
   </div>`;
 
   const el = document.getElementById('balance');
   if (!el) return;
   /** @type {{color: string, curve: any[], dashed: boolean}[]} */
-  /** @type {{color: string, curve: any[], dashed: boolean, label: string}[]} */
-  const lines = rows.map((r) => ({ color: colorOf(r.strategy), curve: r.equityCurve, dashed: false, label: nameOf(r.strategy) }));
+  /** @type {ChartLine[]} */
+  const lines = rows.map((r) => ({
+    color: colorOf(r.strategy),
+    curve: r.equityCurve,
+    dashed: false,
+    label: nameOf(r.strategy),
+    trades: mine.filter((/** @type {any} */ t) => t.strategy === r.strategy),
+  }));
   const randoms = rows.map((r) => r.twin.equityCurve);
   if (randoms.some((c) => c.length)) lines.push({ color: '', curve: averageCurve(randoms, res.startingBankrollUsd), dashed: true, label: 'Random (average)' });
   balanceChart(el, lines, res.startingBankrollUsd, chartSpan(res));
+}
+
+/**
+ * The coins the strategies bought, best first: profit from closed trades plus
+ * what open ones would make if sold now.
+ * @param {any[]} coins @param {number} limit
+ */
+function coinTable(coins, limit) {
+  if (!coins.length) return `<div class="empty">No coins bought yet.</div>`;
+  return `<table class="t compact coin-rank"><thead><tr>
+      <th class="num">#</th><th>Coin</th><th class="num">Trades</th><th class="num" title="Closed trades that made money">Won</th><th class="num">Open</th>
+      <th class="num" title="Closed profit plus open trades if sold now, after costs">Profit</th><th class="num">Last</th>
+    </tr></thead><tbody>${coins
+      .slice(0, limit)
+      .map(
+        (c, i) => `<tr class="link" data-href="#/coin/${encodeURIComponent(c.poolAddress)}">
+        <td class="num muted">${i + 1}</td>
+        <td><b>${esc(c.symbol)}</b> <span class="holders">${c.strategies.map((/** @type {string} */ id) => `<span title="${esc(nameOf(id))}">${dot(id)}</span>`).join('')}</span></td>
+        <td class="num">${c.trades}</td>
+        <td class="num">${c.closed ? `${c.wins}/${c.closed}` : '–'}</td>
+        <td class="num">${c.open || ''}</td>
+        <td class="num big ${tone(Math.round(c.pnlUsd * 100))}">${money(c.pnlUsd)}</td>
+        <td class="num muted">${clock(c.lastAt)}</td>
+      </tr>`,
+      )
+      .join('')}</tbody></table>${coins.length > limit ? (route().page === 'coins' ? `<button type="button" class="btn-link more-btn" data-coins-all>Show all ${coins.length}</button>` : `<div class="muted more">${coins.length - limit} more on the Coins page</div>`) : ''}`;
 }
 
 /** Open trades first, best first, then the last 10 closed. Each trade once. @param {any[]} trades */
@@ -722,7 +853,7 @@ async function rulePage(view, id) {
     balanceChart(
       el,
       [
-        { color: colorOf(id), curve: r.equityCurve, dashed: false, label: nameOf(id) },
+        { color: colorOf(id), curve: r.equityCurve, dashed: false, label: nameOf(id), trades },
         { color: '', curve: tw.equityCurve, dashed: true, label: 'Random' },
       ],
       res.startingBankrollUsd,
@@ -743,7 +874,8 @@ function firesTable(events) {
 
 /** @param {HTMLElement} view */
 async function coinsPage(view) {
-  const tokens = await getJson('/api/tokens');
+  const active = state.status.strategies.filter((/** @type {any} */ s) => !s.retired).map((/** @type {any} */ s) => s.id);
+  const [tokens, coins] = await Promise.all([getJson('/api/tokens'), getJson(`/api/coin-results?strategies=${encodeURIComponent(active.join(','))}`)]);
   const min = state.status.universe.minLiquidityUsd;
   const ratio = (/** @type {any} */ t) => {
     const b = t.buyersM5 ?? t.buysM5;
@@ -774,7 +906,9 @@ async function coinsPage(view) {
     })
     .join('');
   view.innerHTML = `<div class="page">
-    <div class="page-head"><h1>Trending coins</h1></div>
+    <div class="page-head"><h1>Our coins</h1><span class="muted">bought by the strategies this run, best first</span></div>
+    ${coinTable(coins, state.allCoins ? Infinity : 15)}
+    <div class="page-head trending-head"><h1>Trending coins</h1></div>
     ${tokens.length ? `<div class="scroll-x"><table class="t"><thead><tr>
       <th class="num">#</th><th>Coin</th><th class="num">Price</th>${hasChange ? '<th class="num">5m</th>' : ''}<th class="num">Liquidity</th>
       <th class="num" title="Market cap (italic: fully diluted value, when market cap is missing)">Mkt cap</th><th class="num">Vol 1h</th>
@@ -870,7 +1004,9 @@ function guidePage(view) {
     <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Lines move when trades finish.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>The top-right number.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades. The dot next to it is live data: green is fresh, red is stale, grey is off. Click it to turn live data off or quit.</p>
-    <p><b>Coins.</b> Dimmed coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin.</p>
+    <p><b>Buys and sells.</b> The chart marks the latest buys (▲) and sells (▼) on each strategy's line, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
+    <p><b>Best coins.</b> Below the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
+    <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
     <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not.</p>
     <h2 id="past-runs">Past runs</h2>
     <p class="muted">Click a run to see its scoreboard as it ended. "Back to now" returns to the current run.</p>
@@ -964,6 +1100,10 @@ view.addEventListener('click', (e) => {
   if (target.closest('[data-run="current"]')) return openRun(null);
   const runRow = target.closest('[data-open-run]');
   if (runRow) return openRun(Number(runRow.getAttribute('data-open-run')));
+  if (target.closest('[data-coins-all]')) {
+    state.allCoins = true;
+    return void render();
+  }
   const jump = target.closest('[data-scroll]');
   if (jump) return document.getElementById(String(jump.getAttribute('data-scroll')))?.scrollIntoView({ behavior: 'smooth' });
   const live = target.closest('[data-live]');

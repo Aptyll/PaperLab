@@ -9,7 +9,7 @@ import { normalizeResponse } from '../src/providers/geckoterminal.js';
 import { buildPendingTrade, fillPending, exitReasonFor, closeTrade, breakevenMove, priceImpact } from '../src/engine/paper.js';
 import { loadSignals } from '../src/engine/signal-loader.js';
 import { runCycle } from '../src/engine/cycle.js';
-import { strategyResults, wilson, calibration, verdict, goLiveChecks } from '../src/engine/stats.js';
+import { strategyResults, wilson, calibration, verdict, goLiveChecks, coinResults } from '../src/engine/stats.js';
 import { Store } from '../src/db.js';
 import { DEFAULTS } from '../src/config.js';
 import { runSettings, canContinue } from '../src/engine/runs.js';
@@ -541,4 +541,25 @@ test('each strategy trades with its own exits and its own random picker', async 
   assert.equal(r.queued.find((t) => t.strategy === 'buyer-seller-ratio')?.stopLossPct, 0.2);
   assert.equal(store.recentSignalEvents('hawk', 5, deps.runId).length, 1);
   store.close();
+});
+
+test('coin results rank coins by strategy profit, random pickers left out', () => {
+  const base = { sizeUsd: 50, feeRate: 0, slippageRate: 0, quantity: 100, openedAt: 1000, closedAt: null, pnlUsd: null };
+  const trades = /** @type {any[]} */ ([
+    { ...base, strategy: 'hawk', book: 'hawk', poolAddress: 'A', symbol: 'AAA', status: 'closed', closedAt: 2000, pnlUsd: 10 },
+    { ...base, strategy: 'falcon', book: 'falcon', poolAddress: 'A', symbol: 'AAA', status: 'closed', closedAt: 3000, pnlUsd: -4 },
+    { ...base, strategy: 'hawk', book: 'hawk', poolAddress: 'B', symbol: 'BBB', status: 'open' },
+    { ...base, strategy: 'random', book: 'random:hawk', poolAddress: 'C', symbol: 'CCC', status: 'closed', closedAt: 2000, pnlUsd: 99 },
+    { ...base, strategy: 'hawk', book: 'hawk', poolAddress: 'D', symbol: 'DDD', status: 'cancelled', openedAt: null },
+  ]);
+  // B is open: 100 tokens worth $0.60 each now, bought for $50, so +$10 before price impact.
+  const coins = coinResults(trades, (pool) => (pool === 'B' ? { price: 0.6, liquidityUsd: null } : null));
+  assert.deepEqual(
+    coins.map((c) => c.symbol),
+    ['BBB', 'AAA'],
+  );
+  assert.equal(coins[1].pnlUsd, 6);
+  assert.deepEqual(coins[1].strategies, ['hawk', 'falcon']);
+  assert.equal(coins[1].wins, 1);
+  assert.ok(coins[0].openUsd > 9.9 && coins[0].openUsd <= 10, `open value ${coins[0].openUsd}`);
 });

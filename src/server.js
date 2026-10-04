@@ -3,7 +3,7 @@ import http from 'node:http';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { ROOT } from './config.js';
-import { strategyResults, calibration, GO_LIVE } from './engine/stats.js';
+import { strategyResults, calibration, coinResults, GO_LIVE } from './engine/stats.js';
 import { breakevenMove } from './engine/paper.js';
 import { RANDOM_STRATEGY } from './engine/signal-loader.js';
 
@@ -153,6 +153,12 @@ export function createServer({ store, config, signals, strategies, provider, app
           limit: Math.min(Number(q.get('limit') ?? 500), 5000),
         })
         .map((t) => decorate(t, new Map()));
+    }
+    if (pathname === '/api/coin-results') {
+      // Optional ?strategies=a,b limits it to the strategies on screen.
+      const only = q.get('strategies')?.split(',').filter(Boolean);
+      const trades = store.trades({ runId: runOf(q) }).filter((t) => !only || only.includes(t.strategy));
+      return coinResults(trades, latestPrice);
     }
     if (pathname === '/api/results') {
       const run = runOf(q);
