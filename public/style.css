@@ -19,6 +19,8 @@
   --series-6: #008300;
   --series-7: #9085e9;
   --series-8: #e66767;
+  --series-9: #1fb5c9;
+  --chart-line: #d6d8dc;
   --baseline: #8a8984;
   --chart-grid: #16181b;
   --chart-start: #3a3c42;
@@ -353,19 +355,7 @@ table.t.trades { max-width: 760px; }
 .page-head .muted { font-size: 12px; }
 .chart-tip .tip-trades { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
 .chart-tip .sym { color: var(--text-primary); font: 600 12px var(--sans); }
-.chart-feed { position: absolute; top: 10px; left: 12px; z-index: 3; pointer-events: none; min-width: 190px; font-size: 12px; padding: 6px 8px; border-radius: 6px; background: color-mix(in srgb, var(--bg) 70%, transparent); }
-.chart-feed[hidden] { display: none; }
-.chart-feed .tip-row { display: flex; justify-content: space-between; gap: 14px; padding: 1px 0; color: var(--text-secondary); cursor: default; }
-.chart-feed .tip-row b { font: 600 12px var(--mono); }
-.chart-feed .tip-row b.pos { color: var(--good); }
-.chart-feed .tip-row b.neg { color: var(--critical); }
-.chart-feed .tip-row:nth-child(2) { opacity: 0.85; }
-.chart-feed .tip-row:nth-child(3) { opacity: 0.7; }
-.chart-feed .tip-row:nth-child(4) { opacity: 0.55; }
-.chart-feed .tip-row:nth-child(5) { opacity: 0.4; }
-.chart-feed .sym { color: var(--text-primary); font: 600 12px var(--sans); }
 .more-btn { margin: 8px 0 0 10px; }
-@media (max-width: 700px) { .chart-feed { display: none; } }
 .addr { font-size: 11px; }
 
 /* ---- strategy strip: portfolio first, then each strategy, most profit first ---- */
@@ -384,8 +374,8 @@ a.tick:hover { text-decoration: none; background: color-mix(in srgb, var(--c) 10
 .card-rule { color: var(--text-muted); font-size: 11px; margin-top: 1px; }
 
 /* Buy and sell marks in text, matching the chart: a hollow ring buys, a solid dot sells. */
-.mk { display: inline-block; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--c); flex: none; vertical-align: middle; box-sizing: border-box; }
-.mk.sell { background: var(--c); box-shadow: 0 0 0 1px var(--bg), 0 0 0 2px var(--c); width: 6px; height: 6px; border: 0; margin: 0 1px; }
+.mk { display: inline-flex; align-items: center; justify-content: center; width: 13px; height: 13px; border-radius: 50%; border: 1px solid var(--c); color: var(--c); font: 700 8px/1 var(--mono); flex: none; vertical-align: middle; box-sizing: border-box; }
+.mk.sell { background: var(--c); color: var(--bg); }
 
 /* Trades left out because of a bad price reading: said quietly, never hidden. */
 .data-note { font-size: 12px; color: var(--text-secondary); margin: -4px 0 8px; }

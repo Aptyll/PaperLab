@@ -21,4 +21,10 @@ export default [
   { id: 'hawk', codeName: 'Hawk', signal: 'buyer-seller-ratio', exits: { stopLossPct: 0.1, takeProfitPct: 0.2, timeLimitMin: 20 } },
   { id: 'otter', codeName: 'Otter', signal: 'liquidity-mcap-ratio', exits: { stopLossPct: 0.1, takeProfitPct: 0.2, timeLimitMin: 20 } },
   { id: 'viper', codeName: 'Viper', signal: 'volume-spike', exits: { stopLossPct: 0.1, takeProfitPct: 0.2, timeLimitMin: 20 } },
+
+  // Bigger and slower: $250 a trade, a wider stop, a higher target and a longer
+  // hold, to see whether letting trades run pays for the bigger swings.
+  { id: 'eagle', codeName: 'Eagle', signal: 'buyer-seller-ratio', exits: { sizeUsd: 250, stopLossPct: 0.25, takeProfitPct: 0.6, timeLimitMin: 120 } },
+  { id: 'bison', codeName: 'Bison', signal: 'liquidity-mcap-ratio', exits: { sizeUsd: 250, stopLossPct: 0.25, takeProfitPct: 0.6, timeLimitMin: 120 } },
+  { id: 'mamba', codeName: 'Mamba', signal: 'volume-spike', exits: { sizeUsd: 250, stopLossPct: 0.25, takeProfitPct: 0.6, timeLimitMin: 120 } },
 ];
