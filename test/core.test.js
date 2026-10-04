@@ -341,12 +341,14 @@ test('upgrading mid-run from the previous version keeps the same run going', () 
       .run(2000, JSON.stringify(runSettings(DEFAULTS, []))).lastInsertRowid,
   );
   store.db.prepare(`UPDATE trades SET run_id = ? WHERE id = 1`).run(split);
+  // An older set-aside file merged in on the same start sits between them.
+  store.db.prepare("INSERT INTO runs (started_at, origin, settings) VALUES (1, 'imported', '{}')").run();
   store.close();
   const healed = new Store(file);
   assert.equal(healed.beginRun(runSettings(DEFAULTS, []), 9000), migrated.id, 'the split run is joined back');
   assert.equal(healed.rejoined, true);
   assert.ok(healed.backupPath && existsSync(healed.backupPath));
-  assert.equal(healed.runs().length, 1);
+  assert.equal(healed.runs().filter((r) => r.origin !== 'imported').length, 1);
   assert.equal(healed.trades({ runId: migrated.id }).length, 1, 'its trades come along');
   healed.close();
 

@@ -542,7 +542,10 @@ export class Store {
    * @returns {boolean} Whether a split run was rejoined.
    */
   rejoinSplitRun(settings) {
-    const [live, prev] = /** @type {any[]} */ (this.db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 2').all());
+    // Runs merged in from set-aside files are created between the two, so skip them.
+    const [live, prev] = /** @type {any[]} */ (
+      this.db.prepare("SELECT * FROM runs WHERE origin IN ('live', 'migrated') ORDER BY id DESC LIMIT 2").all()
+    );
     if (!live || !prev || live.origin !== 'live' || prev.origin !== 'migrated') return false;
     /** @type {RunSettings} */
     const old = JSON.parse(prev.settings);
