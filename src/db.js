@@ -1,11 +1,24 @@
 // @ts-check
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync, existsSync, renameSync } from 'node:fs';
+import { mkdirSync, existsSync, readdirSync } from 'node:fs';
 import path from 'node:path';
+import { canContinue } from './engine/runs.js';
 
 /** @typedef {import('./types.js').Snapshot} Snapshot */
 /** @typedef {import('./types.js').PaperTrade} PaperTrade */
 /** @typedef {import('./types.js').SignalEvent} SignalEvent */
+/** @typedef {import('./engine/runs.js').RunSettings} RunSettings */
+
+/**
+ * @typedef {Object} Run
+ * @property {number} id
+ * @property {number} startedAt
+ * @property {'live'|'migrated'|'imported'} origin  Live runs are started by this version; the others came from older versions.
+ * @property {RunSettings} settings
+ * @property {string|null} note
+ * @property {number} trades       Trades that filled (cancelled ones not counted).
+ * @property {number|null} lastActivityAt
+ */
 
 /** Snapshot fields in column order: [jsName, sqlName]. */
 const SNAPSHOT_COLS = /** @type {const} */ ([
@@ -76,6 +89,7 @@ const TRADE_COLS = /** @type {const} */ ([
   ['aiProbability', 'ai_probability'],
   ['aiModel', 'ai_model'],
   ['aiRationale', 'ai_rationale'],
+  ['runId', 'run_id'],
 ]);
 
 const EVENT_COLS = /** @type {const} */ ([
@@ -88,14 +102,31 @@ const EVENT_COLS = /** @type {const} */ ([
   ['reason', 'reason'],
   ['tradeId', 'trade_id'],
   ['skipReason', 'skip_reason'],
+  ['runId', 'run_id'],
 ]);
 
 /**
- * Bump when the trades table changes in a way old rows can't follow. An older
- * database is set aside (renamed, not deleted) and a fresh one is started,
- * since results from different trading rules shouldn't be mixed anyway.
+ * Bump when the tables change, and add a step to migrate(). Data is never
+ * deleted: an older database is backed up, then upgraded in place, and its
+ * trades become a past run that stays viewable.
+ * 1: first version (no user_version set). 2: pending trades. 3: runs.
  */
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
+
+const RUNS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS runs (
+  id INTEGER PRIMARY KEY,
+  started_at INTEGER NOT NULL,
+  origin TEXT NOT NULL CHECK (origin IN ('live', 'migrated', 'imported')),
+  settings TEXT NOT NULL,
+  note TEXT
+);
+CREATE TABLE IF NOT EXISTS imports (
+  file TEXT PRIMARY KEY,
+  imported_at INTEGER NOT NULL,
+  run_id INTEGER REFERENCES runs(id)
+);
+`;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -141,9 +172,11 @@ CREATE TABLE IF NOT EXISTS signal_events (
   value REAL NOT NULL,
   reason TEXT NOT NULL,
   trade_id INTEGER,
-  skip_reason TEXT
+  skip_reason TEXT,
+  run_id INTEGER REFERENCES runs(id)
 );
 CREATE INDEX IF NOT EXISTS signal_events_signal_ts ON signal_events (signal_id, ts);
+CREATE INDEX IF NOT EXISTS signal_events_run_signal ON signal_events (run_id, signal_id, ts);
 
 CREATE TABLE IF NOT EXISTS trades (
   id INTEGER PRIMARY KEY,
@@ -181,29 +214,165 @@ CREATE TABLE IF NOT EXISTS trades (
   pnl_pct REAL,
   ai_probability REAL,
   ai_model TEXT,
-  ai_rationale TEXT
+  ai_rationale TEXT,
+  run_id INTEGER REFERENCES runs(id)
 );
+CREATE INDEX IF NOT EXISTS trades_run_book ON trades (run_id, book, pool_address, status);
 CREATE INDEX IF NOT EXISTS trades_strategy_status ON trades (strategy, status);
 CREATE INDEX IF NOT EXISTS trades_book_pool ON trades (book, pool_address, status);
 CREATE INDEX IF NOT EXISTS trades_pool_status ON trades (pool_address, status);
 `;
 
+const MANAGED = "(run_id IS NULL OR run_id NOT IN (SELECT id FROM runs WHERE origin = 'imported'))";
+const SNAPSHOT_SQL_COLS = SNAPSHOT_COLS.map((c) => c[1]).join(', ');
+const EVENT_SQL_COLS = 'signal_id, snapshot_id, pool_address, symbol, ts, value, reason, trade_id, skip_reason';
+const TRADES_TABLE_SQL = /** @type {RegExpMatchArray} */ (SCHEMA.match(/CREATE TABLE IF NOT EXISTS trades \([\s\S]*?\n\);/))[0];
+
+/** @param {DatabaseSync} db @param {string} sql @returns {any} */
+const one = (db, sql) => db.prepare(sql).get();
+
+/** @param {DatabaseSync} db @param {string} schema */
+function hasTable(db, schema, name = 'trades') {
+  return !!db.prepare(`SELECT 1 FROM ${schema}.sqlite_master WHERE type = 'table' AND name = ?`).get(name);
+}
+
 /**
- * @param {string} file
- * @returns {string|null}  New path of the archived database, or null if nothing was moved.
+ * SQL that copies trades from an older table into the current trades table.
+ * Version 1 trades filled instantly, so their signal is their fill.
+ * Offsets shift ids when merging another database into this one.
+ *
+ * @param {string} src       Source table, e.g. "trades_old" or "arc.trades".
+ * @param {string} snapSrc   Snapshots table the source ids point into.
+ * @param {boolean} v1
+ * @param {{trade: number, event: number, snap: number}} off
+ * @param {string} dest
  */
-function archiveIfOutdated(file) {
-  if (!existsSync(file)) return null;
-  const probe = new DatabaseSync(file);
-  const version = Number(/** @type {any} */ (probe.prepare('PRAGMA user_version').get()).user_version);
-  const hasTrades = probe.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trades'").get();
-  probe.close();
-  if (!hasTrades || version >= SCHEMA_VERSION) return null;
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const target = file.replace(/\.sqlite$/, '') + `.v${version || 1}-${stamp}.sqlite`;
-  renameSync(file, target);
-  for (const ext of ['-wal', '-shm']) if (existsSync(file + ext)) renameSync(file + ext, target + ext);
-  return target;
+function tradeCopySql(src, snapSrc, v1, off, dest = 'main.trades') {
+  const plus = (/** @type {string} */ e, /** @type {number} */ n) => (n ? `(${e} + ${n})` : e);
+  /** @type {[string, string][]} */
+  const map = [
+    ['id', plus('t.id', off.trade)],
+    ['strategy', 't.strategy'],
+    ['book', 't.book'],
+    ['matched_trade_id', plus('t.matched_trade_id', off.trade)],
+    ['signal_event_id', plus('t.signal_event_id', off.event)],
+    ['pool_address', 't.pool_address'],
+    ['token_address', 't.token_address'],
+    ['symbol', 't.symbol'],
+    ['status', 't.status'],
+    ['size_usd', 't.size_usd'],
+    ['fee_rate', 't.fee_rate'],
+    ['slippage_rate', 't.slippage_rate'],
+    ['stop_loss_pct', 't.stop_loss_pct'],
+    ['take_profit_pct', 't.take_profit_pct'],
+    ['time_limit_ms', 't.time_limit_ms'],
+    ['signal_at', v1 ? 't.opened_at' : 't.signal_at'],
+    ['signal_snapshot_id', plus(v1 ? 't.entry_snapshot_id' : 't.signal_snapshot_id', off.snap)],
+    ['signal_price', v1 ? 't.entry_price' : 't.signal_price'],
+    ['cancel_reason', v1 ? 'NULL' : 't.cancel_reason'],
+    ['opened_at', 't.opened_at'],
+    ['entry_snapshot_id', plus('t.entry_snapshot_id', off.snap)],
+    ['entry_price', 't.entry_price'],
+    ['entry_fill_price', 't.entry_fill_price'],
+    ['entry_liquidity_usd', v1 ? `(SELECT s.liquidity_usd FROM ${snapSrc} s WHERE s.id = t.entry_snapshot_id)` : 't.entry_liquidity_usd'],
+    ['quantity', 't.quantity'],
+    ['closed_at', 't.closed_at'],
+    ['exit_snapshot_id', plus('t.exit_snapshot_id', off.snap)],
+    ['exit_price', 't.exit_price'],
+    ['exit_fill_price', 't.exit_fill_price'],
+    ['exit_reason', 't.exit_reason'],
+    ['proceeds_usd', 't.proceeds_usd'],
+    ['pnl_usd', 't.pnl_usd'],
+    ['pnl_pct', 't.pnl_pct'],
+    ['ai_probability', 't.ai_probability'],
+    ['ai_model', 't.ai_model'],
+    ['ai_rationale', 't.ai_rationale'],
+    ['run_id', ':run'],
+  ];
+  return `INSERT INTO ${dest} (${map.map((m) => m[0]).join(', ')}) SELECT ${map.map((m) => m[1]).join(', ')} FROM ${src} t`;
+}
+
+/**
+ * Create a run describing trades made by an older version, from what the
+ * trades themselves recorded. Returns null if there are no trades.
+ * @param {DatabaseSync} db
+ * @param {string} src
+ * @param {boolean} v1
+ * @param {number} engine
+ * @param {'migrated'|'imported'} origin
+ * @param {string} note
+ */
+function runFromTrades(db, src, v1, engine, origin, note) {
+  const t = one(db, `SELECT size_usd, fee_rate, slippage_rate, stop_loss_pct, take_profit_pct, time_limit_ms FROM ${src} ORDER BY id DESC LIMIT 1`);
+  if (!t) return null;
+  const first = one(db, `SELECT MIN(${v1 ? 'opened_at' : 'signal_at'}) AS t FROM ${src}`).t;
+  /** @type {RunSettings} */
+  const settings = {
+    engine,
+    startingBankrollUsd: null,
+    trade: {
+      sizeUsd: t.size_usd,
+      feeRate: t.fee_rate,
+      slippageRate: t.slippage_rate,
+      stopLossPct: t.stop_loss_pct,
+      takeProfitPct: t.take_profit_pct,
+      timeLimitMin: t.time_limit_ms / 60_000,
+    },
+    universe: null,
+    signals: {},
+  };
+  const r = db
+    .prepare('INSERT INTO main.runs (started_at, origin, settings, note) VALUES (?, ?, ?, ?)')
+    .run(first ?? Date.now(), origin, JSON.stringify(settings), note);
+  return Number(r.lastInsertRowid);
+}
+
+const NOTES = /** @type {Record<number, string>} */ ({
+  1: 'First version: trades filled instantly at the signal price, with no price impact and no liquidity floor.',
+  2: 'Recorded before runs were tracked.',
+});
+
+/**
+ * Bring an older database up to the current tables, in place. A full backup
+ * is written first. Returns the backup path, or null if nothing changed.
+ * @param {DatabaseSync} db
+ * @param {string} file
+ */
+function migrate(db, file) {
+  const version = Number(one(db, 'PRAGMA user_version').user_version) || 1;
+  if (!hasTable(db, 'main') || version >= SCHEMA_VERSION) return null;
+  let backup = null;
+  if (file !== ':memory:') {
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    backup = file.replace(/\.sqlite$/, '') + `.backup-v${version}-${stamp}.sqlite`;
+    db.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`);
+  }
+  db.exec('PRAGMA foreign_keys = OFF');
+  db.exec(RUNS_SCHEMA);
+  db.exec('BEGIN');
+  try {
+    const v1 = version < 2;
+    const runId = runFromTrades(db, 'main.trades', v1, version, 'migrated', NOTES[version] ?? '');
+    if (v1) {
+      // The status rule changed, which SQLite can only do by rebuilding the table.
+      db.exec(TRADES_TABLE_SQL.replace('CREATE TABLE IF NOT EXISTS trades', 'CREATE TABLE trades_v3'));
+      db.prepare(tradeCopySql('main.trades', 'main.snapshots', true, { trade: 0, event: 0, snap: 0 }, 'trades_v3')).run({ run: runId });
+      db.exec('DROP TABLE trades; ALTER TABLE trades_v3 RENAME TO trades;');
+    } else {
+      db.exec('ALTER TABLE trades ADD COLUMN run_id INTEGER REFERENCES runs(id)');
+      db.prepare('UPDATE trades SET run_id = ?').run(runId);
+    }
+    db.exec('ALTER TABLE signal_events ADD COLUMN run_id INTEGER REFERENCES runs(id)');
+    db.prepare('UPDATE signal_events SET run_id = ?').run(runId);
+    db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
+    db.exec('COMMIT');
+  } catch (err) {
+    db.exec('ROLLBACK');
+    throw err;
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON');
+  }
+  return backup;
 }
 
 /**
@@ -241,16 +410,16 @@ const insertSql = (table, cols) =>
 export class Store {
   /** @param {string} file  Path, or ":memory:". */
   constructor(file) {
-    /** @type {string|null} Where an outdated database was moved, if it was. */
-    this.archivedTo = null;
-    if (file !== ':memory:') {
-      mkdirSync(path.dirname(file), { recursive: true });
-      this.archivedTo = archiveIfOutdated(file);
-    }
+    if (file !== ':memory:') mkdirSync(path.dirname(file), { recursive: true });
     this.db = new DatabaseSync(file);
-    this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
-    this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+    this.db.exec('PRAGMA journal_mode = WAL');
+    /** @type {string|null} Full copy taken before upgrading an older database, if one was. */
+    this.backupPath = migrate(this.db, file);
+    this.db.exec(RUNS_SCHEMA);
     this.db.exec(SCHEMA);
+    this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; PRAGMA foreign_keys = ON;`);
+    /** @type {{file: string, runId: number|null, error: string|null}[]} Databases set aside by earlier versions, merged in now. */
+    this.imported = file === ':memory:' ? [] : this.importArchives(file);
     this.insertSnapshotStmt = this.db.prepare(insertSql('snapshots', SNAPSHOT_COLS));
     this.insertTradeStmt = this.db.prepare(insertSql('trades', TRADE_COLS));
     this.insertEventStmt = this.db.prepare(insertSql('signal_events', EVENT_COLS));
@@ -258,6 +427,116 @@ export class Store {
 
   close() {
     this.db.close();
+  }
+
+  // ---- runs ----
+
+  /**
+   * Merge databases that older versions set aside (data/paper.v1-....sqlite)
+   * into this one as past runs. The files themselves are left untouched.
+   * @param {string} file
+   */
+  importArchives(file) {
+    const dir = path.dirname(file);
+    const base = path.basename(file).replace(/\.sqlite$/, '');
+    const escaped = base.replace(/[.*+?^$()|[\]\\{}]/g, '\\$&');
+    const pattern = new RegExp('^' + escaped + '\\.v(\\d+)-.+\\.sqlite$');
+    /** @type {{file: string, runId: number|null, error: string|null}[]} */
+    const out = [];
+    if (!existsSync(dir)) return out;
+    for (const name of readdirSync(dir).sort()) {
+      const m = name.match(pattern);
+      if (!m || this.db.prepare('SELECT 1 FROM imports WHERE file = ?').get(name)) continue;
+      try {
+        out.push({ file: name, runId: this.importArchive(path.join(dir, name), name, Number(m[1])), error: null });
+      } catch (err) {
+        out.push({ file: name, runId: null, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * @param {string} full
+   * @param {string} name
+   * @param {number} version
+   * @returns {number|null}
+   */
+  importArchive(full, name, version) {
+    const db = this.db;
+    db.prepare('ATTACH DATABASE ? AS arc').run(full);
+    try {
+      /** @type {number|null} */
+      let runId = null;
+      this.tx(() => {
+        if (hasTable(db, 'arc')) {
+          const v1 = !db.prepare('PRAGMA arc.table_info(trades)').all().some((c) => c.name === 'signal_at');
+          const max = (/** @type {string} */ t) => Number(one(db, `SELECT COALESCE(MAX(id), 0) AS m FROM main.${t}`).m);
+          const off = { snap: max('snapshots'), event: max('signal_events'), trade: max('trades') };
+          db.exec(`INSERT INTO main.snapshots (id, ${SNAPSHOT_SQL_COLS}) SELECT id + ${off.snap}, ${SNAPSHOT_SQL_COLS} FROM arc.snapshots`);
+          runId = runFromTrades(db, 'arc.trades', v1, version, 'imported', NOTES[version] ?? '');
+          if (hasTable(db, 'arc', 'signal_events')) {
+            db.prepare(
+              `INSERT INTO main.signal_events (id, ${EVENT_SQL_COLS}, run_id)
+               SELECT id + ${off.event}, signal_id, snapshot_id + ${off.snap}, pool_address, symbol, ts, value, reason,
+                      trade_id + ${off.trade}, skip_reason, :run FROM arc.signal_events`,
+            ).run({ run: runId });
+          }
+          db.prepare(tradeCopySql('arc.trades', 'arc.snapshots', v1, off)).run({ run: runId });
+        }
+        db.prepare('INSERT INTO imports (file, imported_at, run_id) VALUES (?, ?, ?)').run(name, Date.now(), runId);
+      });
+      return runId;
+    } finally {
+      db.exec('DETACH DATABASE arc');
+    }
+  }
+
+  /**
+   * Continue the latest run if its rules match, otherwise start a new one.
+   * @param {RunSettings} settings
+   * @param {number} now
+   * @returns {number} Run id.
+   */
+  beginRun(settings, now) {
+    const last = /** @type {any} */ (this.db.prepare("SELECT * FROM runs WHERE origin = 'live' ORDER BY id DESC LIMIT 1").get());
+    if (last) {
+      /** @type {RunSettings} */
+      const prev = JSON.parse(last.settings);
+      if (canContinue(prev, settings)) {
+        const merged = { ...settings, signals: { ...prev.signals, ...settings.signals } };
+        this.db.prepare('UPDATE runs SET settings = ? WHERE id = ?').run(JSON.stringify(merged), last.id);
+        return Number(last.id);
+      }
+    }
+    const r = this.db
+      .prepare("INSERT INTO runs (started_at, origin, settings, note) VALUES (?, 'live', ?, NULL)")
+      .run(now, JSON.stringify(settings));
+    return Number(r.lastInsertRowid);
+  }
+
+  /**
+   * Every run, oldest first.
+   * @returns {Run[]}
+   */
+  runs() {
+    return this.db
+      .prepare(
+        `SELECT r.*,
+           (SELECT COUNT(*) FROM trades t WHERE t.run_id = r.id AND t.status IN ('open', 'closed')) AS trade_count,
+           (SELECT MAX(COALESCE(t.closed_at, t.opened_at, t.signal_at)) FROM trades t WHERE t.run_id = r.id) AS last_activity
+         FROM runs r ORDER BY r.started_at, r.id`,
+      )
+      .all()
+      .map((r) => ({
+        id: Number(r.id),
+        startedAt: Number(r.started_at),
+        origin: /** @type {Run['origin']} */ (r.origin),
+        settings: JSON.parse(String(r.settings)),
+        note: r.note === null ? null : String(r.note),
+        trades: Number(r.trade_count),
+        lastActivityAt: r.last_activity === null ? null : Number(r.last_activity),
+      }));
   }
 
   /**
@@ -379,12 +658,13 @@ export class Store {
   /**
    * @param {string} signalId
    * @param {number} limit
+   * @param {number} runId
    * @returns {SignalEvent[]}
    */
-  recentSignalEvents(signalId, limit) {
+  recentSignalEvents(signalId, limit, runId) {
     return this.db
-      .prepare('SELECT * FROM signal_events WHERE signal_id = ? ORDER BY ts DESC, id DESC LIMIT ?')
-      .all(signalId, limit)
+      .prepare('SELECT * FROM signal_events WHERE signal_id = ? AND run_id = ? ORDER BY ts DESC, id DESC LIMIT ?')
+      .all(signalId, runId, limit)
       .map((r) => /** @type {SignalEvent} */ (fromRow(EVENT_COLS, r)));
   }
 
@@ -409,13 +689,18 @@ export class Store {
   }
 
   /**
-   * @param {{strategy?: string, book?: string, status?: string, poolAddress?: string, limit?: number}} [f]
+   * `managed` limits to trades the engine still looks after: everything except
+   * trades merged in from databases set aside by older versions, which are
+   * kept exactly as they were.
+   * @param {{strategy?: string, book?: string, status?: string, poolAddress?: string, runId?: number, managed?: boolean, limit?: number}} [f]
    * @returns {PaperTrade[]}
    */
   trades(f = {}) {
     const where = [];
     /** @type {(string|number)[]} */
     const args = [];
+    if (f.runId !== undefined) (where.push('run_id = ?'), args.push(f.runId));
+    if (f.managed) where.push(MANAGED);
     if (f.strategy) (where.push('strategy = ?'), args.push(f.strategy));
     if (f.book) (where.push('book = ?'), args.push(f.book));
     if (f.status) (where.push('status = ?'), args.push(f.status));
@@ -445,36 +730,38 @@ export class Store {
   }
 
   /**
-   * When this book last closed a trade on this pool (epoch ms), or null.
+   * When this book last closed a trade on this pool in this run (epoch ms), or null.
    * @param {string} book
    * @param {string} poolAddress
+   * @param {number} runId
    */
-  lastClosedAt(book, poolAddress) {
+  lastClosedAt(book, poolAddress, runId) {
     const r = /** @type {{t: number|null}|undefined} */ (
       this.db
-        .prepare("SELECT MAX(closed_at) AS t FROM trades WHERE book = ? AND pool_address = ? AND status = 'closed'")
-        .get(book, poolAddress)
+        .prepare("SELECT MAX(closed_at) AS t FROM trades WHERE book = ? AND pool_address = ? AND run_id = ? AND status = 'closed'")
+        .get(book, poolAddress, runId)
     );
     return r?.t ?? null;
   }
 
   /**
-   * Realized P&L minus cash locked in pending and open trades, for one book.
+   * Realized P&L minus cash locked in pending and open trades, for one book in one run.
    * @param {string} book
+   * @param {number} runId
    */
-  cashDelta(book) {
+  cashDelta(book, runId) {
     const r = /** @type {{d: number|null}|undefined} */ (
       this.db
-        .prepare("SELECT SUM(CASE WHEN status IN ('open', 'pending') THEN -size_usd WHEN status = 'closed' THEN pnl_usd ELSE 0 END) AS d FROM trades WHERE book = ?")
-        .get(book)
+        .prepare("SELECT SUM(CASE WHEN status IN ('open', 'pending') THEN -size_usd WHEN status = 'closed' THEN pnl_usd ELSE 0 END) AS d FROM trades WHERE book = ? AND run_id = ?")
+        .get(book, runId)
     );
     return r?.d ?? 0;
   }
 
-  /** Distinct pools with a pending or open trade (they need fresh prices every poll). */
+  /** Distinct pools with a pending or open trade the engine manages (they need fresh prices every poll). */
   openPools() {
     return this.db
-      .prepare("SELECT DISTINCT pool_address AS p FROM trades WHERE status IN ('open', 'pending')")
+      .prepare(`SELECT DISTINCT pool_address AS p FROM trades WHERE status IN ('open', 'pending') AND ${MANAGED}`)
       .all()
       .map((r) => String(r.p));
   }

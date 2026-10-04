@@ -14,6 +14,7 @@ import { RANDOM_STRATEGY } from './signal-loader.js';
  * @property {import('../providers/provider.js').MarketProvider} provider
  * @property {SignalModule[]} signals
  * @property {Config} config
+ * @property {number} runId          The run new trades belong to (see runs.js).
  * @property {() => number} [now]
  * @property {() => number} [rand]   Uniform [0,1), used to pick random control tokens.
  * @property {(msg: string) => void} [log]
@@ -39,9 +40,10 @@ export const randomBook = (signalId) => `${RANDOM_STRATEGY}:${signalId}`;
  * @param {Store} store
  * @param {string} book
  * @param {number} startingBankroll
+ * @param {number} runId
  */
-export function availableCash(store, book, startingBankroll) {
-  return startingBankroll + store.cashDelta(book);
+export function availableCash(store, book, startingBankroll, runId) {
+  return startingBankroll + store.cashDelta(book, runId);
 }
 
 /**
@@ -51,13 +53,14 @@ export function availableCash(store, book, startingBankroll) {
  * @param {string} poolAddress
  * @param {Config} config
  * @param {number} now
+ * @param {number} runId
  */
-export function blockReason(store, book, poolAddress, config, now) {
-  if (store.trades({ book, poolAddress, status: 'open', limit: 1 }).length) return 'already_open';
-  if (store.trades({ book, poolAddress, status: 'pending', limit: 1 }).length) return 'already_open';
-  const last = store.lastClosedAt(book, poolAddress);
+export function blockReason(store, book, poolAddress, config, now, runId) {
+  if (store.trades({ book, poolAddress, status: 'open', runId, limit: 1 }).length) return 'already_open';
+  if (store.trades({ book, poolAddress, status: 'pending', runId, limit: 1 }).length) return 'already_open';
+  const last = store.lastClosedAt(book, poolAddress, runId);
   if (last !== null && now - last < config.trade.reentryCooldownMin * 60_000) return 'cooldown';
-  if (availableCash(store, book, config.startingBankrollUsd) < config.trade.sizeUsd) return 'no_cash';
+  if (availableCash(store, book, config.startingBankrollUsd, runId) < config.trade.sizeUsd) return 'no_cash';
   return null;
 }
 
@@ -69,7 +72,7 @@ export function blockReason(store, book, poolAddress, config, now) {
  * @returns {Promise<CycleResult>}
  */
 export async function runCycle(deps) {
-  const { store, provider, signals, config } = deps;
+  const { store, provider, signals, config, runId } = deps;
   const now = deps.now ?? Date.now;
   const rand = deps.rand ?? Math.random;
   const log = deps.log ?? (() => {});
@@ -102,8 +105,9 @@ export async function runCycle(deps) {
 
   // 2. Fill trades queued last poll, at this poll's price (like a trade placed by
   // hand a minute after the signal). Signal trades go first so a random twin can
-  // be cancelled when the trade it mirrors was.
-  const pending = store.trades({ status: 'pending' }).sort((a, b) => Number(a.strategy === RANDOM_STRATEGY) - Number(b.strategy === RANDOM_STRATEGY));
+  // be cancelled when the trade it mirrors was. Trades from an earlier run are
+  // still seen through to the end under their own rules.
+  const pending = store.trades({ status: 'pending', managed: true }).sort((a, b) => Number(a.strategy === RANDOM_STRATEGY) - Number(b.strategy === RANDOM_STRATEGY));
   /** @type {Set<number>} */
   const cancelledIds = new Set();
   for (const t of pending) {
@@ -124,7 +128,7 @@ export async function runCycle(deps) {
 
   // 3. Exits.
   const staleMs = config.trade.staleAfterMin * 60_000;
-  for (const t of store.trades({ status: 'open' })) {
+  for (const t of store.trades({ status: 'open', managed: true })) {
     const latest = fresh.get(t.poolAddress) ?? store.latestSnapshot(t.poolAddress);
     const reason = exitReasonFor(t, latest, ts, staleMs, config.trade.collapseLiquidityRatio);
     if (!reason) continue;
@@ -177,15 +181,16 @@ export async function runCycle(deps) {
         reason: res.reason,
         tradeId: null,
         skipReason: null,
+        runId,
       });
       result.signalEvents++;
-      const blocked = blockReason(store, sig.id, snap.poolAddress, config, ts);
+      const blocked = blockReason(store, sig.id, snap.poolAddress, config, ts, runId);
       if (blocked) {
         store.resolveSignalEvent(/** @type {number} */ (ev.id), null, blocked);
         continue;
       }
       const trade = store.insertTrade(
-        buildPendingTrade({ strategy: sig.id, snapshot: snap, rules: config.trade, now: ts, signalEventId: ev.id }),
+        buildPendingTrade({ strategy: sig.id, snapshot: snap, rules: config.trade, now: ts, signalEventId: ev.id, runId }),
       );
       store.resolveSignalEvent(/** @type {number} */ (ev.id), trade.id ?? null, null);
       signalTrades.push(trade);
@@ -197,14 +202,14 @@ export async function runCycle(deps) {
   // uniformly random token from the same universe, from its own $1,000 book.
   for (const st of signalTrades) {
     const book = randomBook(st.strategy);
-    const candidates = universe.filter((s) => blockReason(store, book, s.poolAddress, config, ts) === null);
+    const candidates = universe.filter((s) => blockReason(store, book, s.poolAddress, config, ts, runId) === null);
     if (!candidates.length) {
       log(`random control skipped for trade ${st.id}: no eligible token or no cash in ${book}`);
       continue;
     }
     const pick = candidates[Math.floor(rand() * candidates.length)];
     const trade = store.insertTrade(
-      buildPendingTrade({ strategy: RANDOM_STRATEGY, book, snapshot: pick, rules: config.trade, now: ts, matchedTradeId: st.id }),
+      buildPendingTrade({ strategy: RANDOM_STRATEGY, book, snapshot: pick, rules: config.trade, now: ts, matchedTradeId: st.id, runId }),
     );
     result.queued.push(trade);
   }

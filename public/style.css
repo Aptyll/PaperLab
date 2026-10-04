@@ -70,6 +70,38 @@ a:hover { text-decoration: underline; }
 .nav a:hover { color: var(--text-primary); background: var(--surface-1); text-decoration: none; }
 .nav a.active { color: var(--text-primary); background: var(--surface-2); }
 .spacer { flex: 1; }
+.run-pick {
+  background: var(--surface-1);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: 12px var(--sans);
+  padding: 4px 6px;
+}
+.run-pick[hidden] { display: none; }
+.past-run {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  justify-content: space-between;
+  border: 1px solid #5a4a1a;
+  background: #1d1a10;
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+}
+.past-run b { color: var(--warning); }
+.past-run button {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 12px;
+  font: 12px var(--sans);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.past-run button:hover { border-color: var(--text-muted); }
 .health-text { font-size: 12px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
 .health { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }

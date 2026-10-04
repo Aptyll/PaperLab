@@ -8,6 +8,9 @@
 //   #/rule/<id>    One rule: its trades, its twin's trades, why it fired
 //   #/coins        Trending coins
 //   #/coin/<pool>  One coin: price chart with every trade marked
+//
+// Runs: each set of trading rules is its own run. Pages show the current run;
+// the picker in the top bar switches to an earlier one (kept until reload).
 
 /** @type {any} */
 const LWC = /** @type {any} */ (window).LightweightCharts;
@@ -20,6 +23,7 @@ const state = {
   /** @type {Record<string, string>} */ colors: {},
   /** @type {any[]} */ charts: [],
   showTwinsInFeed: load('showTwinsInFeed') === '1',
+  /** @type {number|null} Past run being viewed; null means the current run. */ viewRun: null,
 };
 
 /** @param {string} k */
@@ -105,6 +109,9 @@ const owner = (t) => (t.strategy === 'random' ? `${ruleName(String(t.book).split
 /** @param {string} id */
 const dot = (id) => `<span class="dot" style="background:${colorOf(id)}"></span>`;
 
+/** Add the viewed run to an API url. @param {string} url */
+const forRun = (url) => (state.viewRun === null ? url : `${url}${url.includes('?') ? '&' : '?'}run=${state.viewRun}`);
+
 /** @param {string} url */
 async function getJson(url) {
   const r = await fetch(url);
@@ -127,11 +134,97 @@ function renderTopbar() {
   const el = /** @type {HTMLElement} */ (document.getElementById('health'));
   el.title = tip;
   el.innerHTML = `<span class="health ${healthy ? 'ok' : 'bad'}"></span>${source} · ${when}${s.lastCycle && !s.lastCycle.ok ? ' · <span class="neg">last update failed</span>' : ''}`;
+  renderRunPicker();
   for (const a of document.querySelectorAll('.nav a')) {
     const r = route();
     const active = a.getAttribute('data-nav') === (r.page === 'coins' || r.page === 'coin' ? 'coins' : 'home');
     a.classList.toggle('active', active);
   }
+}
+
+// ---------- runs ----------
+
+const dayTime = (/** @type {number|null} */ ms) =>
+  ms ? new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '–';
+
+/** Runs numbered in the order they started. @returns {any[]} */
+function runsInOrder() {
+  return (state.status?.runs ?? []).map((/** @type {any} */ r, /** @type {number} */ i) => ({ ...r, n: i + 1 }));
+}
+
+/** The run a page is showing. */
+function shownRun() {
+  const runs = runsInOrder();
+  const id = state.viewRun ?? state.status.runId;
+  return runs.find((r) => r.id === id) ?? null;
+}
+
+function renderRunPicker() {
+  const el = /** @type {HTMLSelectElement} */ (document.getElementById('run-pick'));
+  const runs = runsInOrder();
+  el.hidden = runs.length < 2;
+  if (el.hidden) return;
+  const current = state.status.runId;
+  el.innerHTML = runs
+    .slice()
+    .reverse()
+    .map((r) => {
+      const label =
+        r.id === current
+          ? `Run ${r.n} · now`
+          : `Run ${r.n} · ${dayTime(r.startedAt)} · ${r.trades} trade${r.trades === 1 ? '' : 's'}`;
+      return `<option value="${r.id}">${esc(label)}</option>`;
+    })
+    .join('');
+  el.value = String(state.viewRun ?? current);
+}
+
+/** What a past run did differently from the current one, in words. @param {any} run */
+function runDifferences(run) {
+  const now = runsInOrder().find((r) => r.id === state.status.runId)?.settings;
+  const a = run.settings;
+  if (!now) return [];
+  /** @type {string[]} */
+  const out = [];
+  if (a.engine !== now.engine && a.engine === 1) out.push('instant fills, no price impact');
+  else if (a.engine !== now.engine) out.push('older trade simulation');
+  const t = a.trade ?? {};
+  const n = now.trade;
+  const p = (/** @type {number} */ x) => `${+(x * 100).toFixed(2)}%`;
+  if (t.sizeUsd !== undefined && t.sizeUsd !== n.sizeUsd) out.push(`$${t.sizeUsd} per trade`);
+  if (t.stopLossPct !== undefined && t.stopLossPct !== n.stopLossPct) out.push(`stop at −${p(t.stopLossPct)}`);
+  if (t.takeProfitPct !== undefined && t.takeProfitPct !== n.takeProfitPct) out.push(`take profit at +${p(t.takeProfitPct)}`);
+  if (t.timeLimitMin !== undefined && t.timeLimitMin !== n.timeLimitMin) out.push(`${t.timeLimitMin} min limit`);
+  if (t.feeRate !== undefined && (t.feeRate !== n.feeRate || t.slippageRate !== n.slippageRate)) out.push(`costs ${p(t.feeRate)} fee + ${p(t.slippageRate)} slippage`);
+  if (a.universe === null && now.universe) out.push('no liquidity floor');
+  else if (a.universe && a.universe.minLiquidityUsd !== now.universe.minLiquidityUsd) out.push(`coins with ${usd(a.universe.minLiquidityUsd)}+ liquidity`);
+  for (const [id, params] of Object.entries(a.signals ?? {})) {
+    const cur = now.signals?.[id];
+    if (cur && JSON.stringify(cur) !== JSON.stringify(params)) out.push(`different ${ruleName(id)} settings`);
+  }
+  return out;
+}
+
+/** Banner on pages showing a past run. */
+function pastRunBanner() {
+  const run = shownRun();
+  if (!run || state.viewRun === null || run.id === state.status.runId) return '';
+  const diff = runDifferences(run);
+  const span = `${dayTime(run.startedAt)} to ${dayTime(run.lastActivityAt)}`;
+  return `<div class="past-run">
+    <div><b>Run ${run.n}, a past run</b> <span class="muted">· ${esc(span)}</span>
+      <div class="secondary">${diff.length ? `Different from now: ${esc(diff.join(' · '))}.` : 'Same rules as now.'}${run.note && run.settings.engine === runsInOrder().find((r) => r.id === state.status.runId)?.settings.engine ? ` <span class="muted">${esc(run.note)}</span>` : ''}</div></div>
+    <button type="button" data-run="current">Back to now</button>
+  </div>`;
+}
+
+/** Trade rules for the run being shown, falling back to today's for anything not recorded. */
+function shownRules() {
+  const run = shownRun();
+  return {
+    trade: { ...state.status.trade, ...(run?.settings.trade ?? {}) },
+    universe: run ? run.settings.universe : state.status.universe,
+  };
 }
 
 // ---------- charts ----------
@@ -264,6 +357,7 @@ function outcome(t) {
       ] ?? t.cancelReason,
     )}</span>`;
   }
+  if (t.status === 'open' && shownRun()?.origin === 'imported') return '<span class="muted">still open when that version stopped</span>';
   if (t.status === 'open') {
     return `open ${duration(Date.now() - t.openedAt)}${t.markPct !== null && t.markPct !== undefined ? ` · now <span class="${tone(t.markPct)}">${pct(t.markPct)}</span>` : ''}`;
   }
@@ -292,9 +386,8 @@ function tradeRows(trades, opts = {}) {
 
 /** @param {HTMLElement} view */
 async function scoreboardPage(view) {
-  const [res, trades] = await Promise.all([getJson('/api/results'), getJson('/api/trades?limit=300')]);
-  const s = state.status;
-  const t = s.trade;
+  const [res, trades] = await Promise.all([getJson(forRun('/api/results')), getJson(forRun('/api/trades?limit=300'))]);
+  const { trade: t, universe } = shownRules();
   const rules = res.strategies.filter((/** @type {any} */ r) => r.strategy !== 'random');
   const rows = rules
     .map((/** @type {any} */ r) => {
@@ -311,8 +404,9 @@ async function scoreboardPage(view) {
     .join('');
 
   view.innerHTML = `<div class="page">
+    ${pastRunBanner()}
     <div class="page-head"><h1>Is any rule beating random?</h1></div>
-    <p class="sub">Every rule has a random twin that buys a random coin at the same moment, with the same rules: $${t.sizeUsd} per trade · sell at −${t.stopLossPct * 100}% or +${t.takeProfitPct * 100}% or after ${t.timeLimitMin} min · coins with $${Math.round(s.universe.minLiquidityUsd / 1000)}K+ liquidity.</p>
+    <p class="sub">Every rule has a random twin that buys a random coin at the same moment, with the same rules: $${t.sizeUsd} per trade · sell at −${+(t.stopLossPct * 100).toFixed(2)}% or +${+(t.takeProfitPct * 100).toFixed(2)}% or after ${t.timeLimitMin} min${universe ? ` · coins with $${Math.round(universe.minLiquidityUsd / 1000)}K+ liquidity` : ''}.</p>
     <div class="scroll-x"><table class="t board"><thead><tr>
       <th>Rule</th><th>Verdict</th><th class="num">Trades</th>
       <th class="num">Win rate <span class="vs">twin</span></th><th class="num">Profit <span class="vs">twin</span></th>
@@ -385,13 +479,19 @@ function calibrationBlock(cal) {
 
 /** @param {HTMLElement} view @param {string} id */
 async function rulePage(view, id) {
-  const meta = state.status.signals.find((/** @type {any} */ s) => s.id === id);
-  if (!meta) {
-    view.innerHTML = `<div class="page"><a class="back" href="#/">← Scoreboard</a><div class="empty">Unknown rule.</div></div>`;
+  const [{ trades, twinTrades, events }, res] = await Promise.all([
+    getJson(forRun(`/api/strategies/${encodeURIComponent(id)}`)),
+    getJson(forRun('/api/results')),
+  ]);
+  const r = res.strategies.find((/** @type {any} */ x) => x.strategy === id);
+  if (!r) {
+    view.innerHTML = `<div class="page">${pastRunBanner()}<a class="back" href="#/">← Scoreboard</a><div class="empty">This rule has no trades in this run.</div></div>`;
     return;
   }
-  const [{ trades, twinTrades, events }, res] = await Promise.all([getJson(`/api/strategies/${encodeURIComponent(id)}`), getJson('/api/results')]);
-  const r = res.strategies.find((/** @type {any} */ x) => x.strategy === id);
+  // A past run may hold a rule that has since been removed, or used other settings.
+  const known = state.status.signals.find((/** @type {any} */ s) => s.id === id);
+  const runParams = shownRun()?.settings.signals?.[id];
+  const meta = { name: known?.name ?? id, description: known?.description ?? '', params: runParams ?? known?.params ?? {} };
   const tw = r.twin;
   const active = trades.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending');
   const closed = trades.filter((/** @type {any} */ t) => t.status === 'closed');
@@ -400,6 +500,7 @@ async function rulePage(view, id) {
   const params = Object.entries(meta.params).map(([k, v]) => `${esc(k)} ${esc(v)}`).join(' · ');
 
   view.innerHTML = `<div class="page">
+    ${pastRunBanner()}
     <a class="back" href="#/">← Scoreboard</a>
     <div class="page-head"><h1 class="rule-name">${dot(id)}${esc(meta.name)}</h1>${verdictPill(r)}</div>
     <p class="sub">${esc(meta.description)} <span title="Settings">(${params})</span></p>
@@ -484,7 +585,7 @@ async function coinsPage(view) {
 
 /** @param {HTMLElement} view @param {string} pool */
 async function coinPage(view, pool) {
-  const { snapshots, trades } = await getJson(`/api/pools/${encodeURIComponent(pool)}`);
+  const { snapshots, trades } = await getJson(forRun(`/api/pools/${encodeURIComponent(pool)}`));
   const s = snapshots[snapshots.length - 1];
   if (!s) {
     view.innerHTML = `<div class="page"><a class="back" href="#/coins">← Coins</a><div class="empty">No data for this coin.</div></div>`;
@@ -493,6 +594,7 @@ async function coinPage(view, pool) {
   const cap = s.marketCapUsd ?? s.fdvUsd;
   const filled = trades.filter((/** @type {any} */ t) => t.status !== 'cancelled');
   view.innerHTML = `<div class="page">
+    ${pastRunBanner()}
     <a class="back" href="javascript:history.back()">← Back</a>
     <div class="page-head"><h1>${esc(s.symbol)}</h1><span class="muted">${esc(s.name)}</span>
       ${s.source === 'geckoterminal' ? `<a href="https://www.geckoterminal.com/solana/pools/${encodeURIComponent(s.poolAddress)}" target="_blank" rel="noopener" style="font-size:12px">GeckoTerminal ↗</a>` : ''}</div>
@@ -563,7 +665,20 @@ async function refresh() {
   }
 }
 
+document.getElementById('run-pick')?.addEventListener('change', (e) => {
+  const id = Number(/** @type {HTMLSelectElement} */ (e.target).value);
+  state.viewRun = id === state.status.runId ? null : id;
+  if (route().page === 'coins') location.hash = '#/';
+  void render();
+});
+
 document.getElementById('view')?.addEventListener('click', (e) => {
+  if (/** @type {HTMLElement} */ (e.target).closest('[data-run="current"]')) {
+    state.viewRun = null;
+    renderRunPicker();
+    void render();
+    return;
+  }
   const tr = /** @type {HTMLElement} */ (e.target).closest('[data-href]');
   if (tr && !/** @type {HTMLElement} */ (e.target).closest('a, input, label, summary')) location.hash = String(tr.getAttribute('data-href'));
 });

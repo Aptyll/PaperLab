@@ -12,6 +12,7 @@ import { runCycle } from '../src/engine/cycle.js';
 import { strategyResults, wilson, calibration, verdict } from '../src/engine/stats.js';
 import { Store } from '../src/db.js';
 import { DEFAULTS } from '../src/config.js';
+import { runSettings, canContinue } from '../src/engine/runs.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/geckoterminal-trending.json', import.meta.url), 'utf8'));
 
@@ -171,7 +172,7 @@ test('cycle: queue, fill next poll with a random twin, exit, cooldown', async ()
     snap({ ts: now, poolAddress: 'P3', symbol: 'THIN', priceUsd: price, trendingRank: 3, liquidityUsd: 5_000 }),
     snap({ ts: now, poolAddress: 'P4', symbol: 'NOSELL', priceUsd: price, trendingRank: 4, sellsM5: 0 }),
   ];
-  const deps = { store, provider: fakeProvider(() => now, pools), signals: await bsr(), config: DEFAULTS, now: () => now, rand: () => 0.99 };
+  const deps = { store, provider: fakeProvider(() => now, pools), signals: await bsr(), config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
 
   const r1 = await runCycle(deps);
   assert.equal(r1.queued.length, 2);
@@ -187,7 +188,7 @@ test('cycle: queue, fill next poll with a random twin, exit, cooldown', async ()
   assert.equal(r2.opened.length, 2, 'both fill one poll later');
   assert.ok(r2.opened.every((t) => t.entryPrice === 1.02));
   assert.equal(r2.queued.length, 0);
-  assert.equal(store.recentSignalEvents('buyer-seller-ratio', 1)[0].skipReason, 'already_open');
+  assert.equal(store.recentSignalEvents('buyer-seller-ratio', 1, deps.runId)[0].skipReason, 'already_open');
 
   now += 60_000;
   price = 2;
@@ -198,7 +199,7 @@ test('cycle: queue, fill next poll with a random twin, exit, cooldown', async ()
   now += 60_000;
   const r4 = await runCycle(deps);
   assert.equal(r4.queued.length, 0);
-  assert.equal(store.recentSignalEvents('buyer-seller-ratio', 1)[0].skipReason, 'cooldown');
+  assert.equal(store.recentSignalEvents('buyer-seller-ratio', 1, deps.runId)[0].skipReason, 'cooldown');
 
   const res = strategyResults({ trades: store.trades(), strategies: ['buyer-seller-ratio'], startingBankroll: 1000, latestPrice: () => null });
   assert.equal(res[0].all.closed, 1);
@@ -215,7 +216,7 @@ test('cycle: a chased signal trade cancels its random twin too', async () => {
     snap({ ts: now, poolAddress: 'P1', priceUsd: price, buyersM5: 50, sellersM5: 5 }),
     snap({ ts: now, poolAddress: 'P2', priceUsd: 1, trendingRank: 2 }),
   ];
-  const deps = { store, provider: fakeProvider(() => now, pools), signals: await bsr(), config: DEFAULTS, now: () => now, rand: () => 0.99 };
+  const deps = { store, provider: fakeProvider(() => now, pools), signals: await bsr(), config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
   await runCycle(deps);
   now += 60_000;
   price = 1.2;
@@ -226,14 +227,14 @@ test('cycle: a chased signal trade cancels its random twin too', async () => {
 });
 
 /** @param {Store} store */
-const availableCashOf = (store) => 2000 + store.cashDelta('buyer-seller-ratio') + store.cashDelta('random:buyer-seller-ratio');
+const availableCashOf = (store, run = 1) => 2000 + store.cashDelta('buyer-seller-ratio', run) + store.cashDelta('random:buyer-seller-ratio', run);
 
 test('a failed fetch still closes trades past their time limit', async () => {
   const store = new Store(':memory:');
   let now = 0;
   let fail = false;
   const pools = () => [snap({ ts: now, poolAddress: 'P1', buyersM5: 50, sellersM5: 5 })];
-  const deps = { store, provider: fakeProvider(() => now, pools, () => fail), signals: await bsr(), config: DEFAULTS, now: () => now };
+  const deps = { store, provider: fakeProvider(() => now, pools, () => fail), signals: await bsr(), config: DEFAULTS, now: () => now, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
   await runCycle(deps);
   now += 60_000;
   await runCycle(deps); // fills
@@ -246,19 +247,119 @@ test('a failed fetch still closes trades past their time limit', async () => {
   store.close();
 });
 
-test('an outdated database is set aside, not deleted', () => {
+const SCHEMA_V1 = readFileSync(new URL('./fixtures/schema-v1.sql', import.meta.url), 'utf8');
+
+/** A database as the first version left it: one closed and one open trade. @param {string} file */
+function writeV1(file) {
+  const db = new DatabaseSync(file);
+  db.exec(SCHEMA_V1);
+  const s = snap();
+  db.prepare(
+    `INSERT INTO snapshots (id, ts, source, pool_address, token_address, symbol, name, price_usd, liquidity_usd)
+     VALUES (1, 1000, 'geckoterminal', 'P1', 'T1', 'OLD', 'Old', 1, 150000)`,
+  ).run();
+  db.prepare(
+    `INSERT INTO signal_events (id, signal_id, snapshot_id, pool_address, symbol, ts, value, reason, trade_id)
+     VALUES (1, 'volume-spike', 1, 'P1', 'OLD', 1000, 4, 'volume 4x', 1)`,
+  ).run();
+  const ins = db.prepare(
+    `INSERT INTO trades (id, strategy, book, matched_trade_id, signal_event_id, pool_address, token_address, symbol, status,
+       size_usd, fee_rate, slippage_rate, stop_loss_pct, take_profit_pct, time_limit_ms, opened_at, entry_snapshot_id,
+       entry_price, entry_fill_price, quantity, closed_at, exit_reason, pnl_usd, pnl_pct)
+     VALUES (?, ?, ?, ?, ?, 'P1', 'T1', 'OLD', ?, 50, 0.003, 0.015, 0.2, 0.4, 3600000, 1000, 1, 1, 1.02, 48, ?, ?, ?, ?)`,
+  );
+  ins.run(1, 'volume-spike', 'volume-spike', null, 1, 'closed', 2000, 'take_profit', 18, 0.36);
+  ins.run(2, 'random', 'random:volume-spike', 1, null, 'open', null, null, null, null);
+  db.close();
+  void s;
+}
+
+test('an older database is upgraded in place, backed up, and kept as a past run', () => {
   const dir = mkdtempSync(path.join(tmpdir(), 'paperlab-'));
   const file = path.join(dir, 'paper.sqlite');
-  const old = new DatabaseSync(file);
-  old.exec("CREATE TABLE trades (id INTEGER PRIMARY KEY, status TEXT CHECK (status IN ('open', 'closed')))");
-  old.close();
+  writeV1(file);
   const store = new Store(file);
-  assert.ok(store.archivedTo && existsSync(store.archivedTo));
-  assert.equal(readdirSync(dir).filter((f) => f.endsWith('.sqlite')).length, 2);
+  assert.ok(store.backupPath && existsSync(store.backupPath), 'a full copy is taken first');
+  const [run] = store.runs();
+  assert.equal(run.origin, 'migrated');
+  assert.equal(run.settings.engine, 1);
+  assert.equal(run.settings.trade.stopLossPct, 0.2);
+  assert.equal(run.trades, 2);
+  const [open, closed] = store.trades({ runId: run.id });
+  assert.equal(closed.pnlUsd, 18, 'results are unchanged');
+  assert.equal(closed.signalAt, 1000, 'first-version trades filled at the signal');
+  assert.equal(open.entryLiquidityUsd, 150000, 'filled in from the entry snapshot');
+  assert.equal(store.recentSignalEvents('volume-spike', 5, run.id).length, 1);
+  assert.equal(store.trades({ status: 'open', managed: true }).length, 1, 'its open trade is still seen through');
+
+  const live = store.beginRun(runSettings(DEFAULTS, []), 5000);
+  assert.notEqual(live, run.id, 'new rules start a new run');
+  assert.equal(store.cashDelta('random:volume-spike', live), 0, 'the new run starts with full cash');
   store.close();
+
   const again = new Store(file);
-  assert.equal(again.archivedTo, null, 'current schema is kept');
+  assert.equal(again.backupPath, null, 'already current: nothing to do');
+  assert.equal(again.beginRun(runSettings(DEFAULTS, []), 9000), live, 'same rules continue the same run');
+  assert.equal(again.runs().length, 2);
   again.close();
+});
+
+test('databases set aside by the previous version are merged in as past runs', () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'paperlab-'));
+  const file = path.join(dir, 'paper.sqlite');
+  writeV1(path.join(dir, 'paper.v1-2026-10-04T01-00-00-000Z.sqlite'));
+  const first = new Store(file);
+  first.insertSnapshot(snap({ ts: 5000, poolAddress: 'P9' }));
+  first.close();
+
+  const store = new Store(file);
+  assert.deepEqual(store.imported, [], 'merged once, on the first start that saw it');
+  const [run] = store.runs();
+  assert.equal(run.origin, 'imported');
+  const trades = store.trades({ runId: run.id });
+  assert.equal(trades.length, 2);
+  const twin = trades.find((t) => t.book === 'random:volume-spike');
+  const sig = trades.find((t) => t.book === 'volume-spike');
+  assert.equal(twin?.matchedTradeId, sig?.id, 'links between trades survive the id shift');
+  assert.ok(store.snapshotById(/** @type {number} */ (sig?.entrySnapshotId))?.symbol === 'OLD');
+  assert.equal(store.trades({ status: 'open', managed: true }).length, 0, 'merged trades are kept exactly as they were');
+  assert.equal(readdirSync(dir).filter((f) => f.includes('.v1-')).length, 1, 'the set-aside file is left in place');
+  store.close();
+});
+
+test('runs: same rules continue, changed rules or costs start a new run', () => {
+  const base = runSettings(DEFAULTS, []);
+  const withSignal = { ...base, signals: { a: { x: 1 } } };
+  assert.ok(canContinue(base, withSignal), 'adding a rule file keeps the run');
+  assert.ok(!canContinue(withSignal, { ...base, signals: { a: { x: 2 } } }), 'changing a rule setting starts a new run');
+  assert.ok(!canContinue(base, { ...base, trade: { ...base.trade, stopLossPct: 0.1 } }));
+  assert.ok(!canContinue(base, { ...base, engine: base.engine + 1 }));
+});
+
+test('a new run trades from fresh books while the old run finishes its open trades', async () => {
+  const store = new Store(':memory:');
+  let now = 0;
+  const pools = () => [
+    snap({ ts: now, poolAddress: 'P1', buyersM5: 50, sellersM5: 5 }),
+    snap({ ts: now, poolAddress: 'P2', trendingRank: 2 }),
+  ];
+  const signals = await bsr();
+  const oldRun = store.beginRun(runSettings(DEFAULTS, signals), 0);
+  const deps = { store, provider: fakeProvider(() => now, pools), signals, config: DEFAULTS, now: () => now, runId: oldRun };
+  await runCycle(deps);
+  now += 60_000;
+  await runCycle(deps); // fills in the old run
+
+  const config = { ...DEFAULTS, trade: { ...DEFAULTS.trade, stopLossPct: 0.1 } };
+  const newRun = store.beginRun(runSettings(config, signals), now);
+  assert.notEqual(newRun, oldRun);
+  now += 60_000;
+  const r = await runCycle({ ...deps, config, runId: newRun });
+  assert.ok(r.queued.some((t) => t.strategy === 'buyer-seller-ratio' && t.runId === newRun), 'not blocked by the old run holding P1');
+  now += 61 * 60_000;
+  const r2 = await runCycle({ ...deps, config, runId: newRun });
+  assert.ok(r2.closed.some((t) => t.runId === oldRun && t.exitReason === 'time_limit'), 'old trades close under their own rules');
+  store.close();
 });
 
 test('wilson interval and calibration', () => {

@@ -55,6 +55,12 @@ The first prices appear within a minute. Trades start opening as soon as a rule 
 - **To stop:** click the Terminal (or black) window and press **Ctrl + C**.
 - **To start again later:** repeat Step 3. Your trades and history are saved and pick up where you left off.
 
+## Getting a newer version
+
+Your trades live in the `data` folder inside the Paper Lab folder. Updates never delete them: if a new version needs to change how they're stored, it saves a full copy first, and older results stay viewable from the run menu at the top of the page.
+
+If you update by downloading a fresh ZIP, you get a new folder without your history. Before starting the new one, stop Paper Lab and copy the `data` folder from the old folder into the new one.
+
 ## Trying it with fake data
 
 To see how it works without the internet, use `npm run demo` instead of `npm start` in Step 3. Demo data is kept separate, so it never mixes with real results.

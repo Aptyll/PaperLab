@@ -15,6 +15,7 @@ export class App extends EventEmitter {
    * @param {import('./types.js').SignalModule[]} deps.signals
    * @param {import('./config.js').Config} deps.config
    * @param {import('./ai/scorer.js').Scorer} deps.scorer
+ * @param {number} deps.runId
    * @param {(msg: string) => void} [deps.log]
    */
   constructor(deps) {

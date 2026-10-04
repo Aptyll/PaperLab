@@ -81,6 +81,7 @@
  * @property {string} reason
  * @property {number|null} tradeId   Trade opened because of it, null if skipped (cooldown, no cash, ...).
  * @property {string|null} skipReason
+ * @property {number|null} runId     The run (rule set) it belongs to.
  */
 
 /**
@@ -133,6 +134,7 @@
  * @property {number|null} aiProbability Model's probability (0..1) that this trade closes with a profit after costs.
  * @property {string|null} aiModel
  * @property {string|null} aiRationale
+ * @property {number|null} runId     The run (rule set) it belongs to. See src/engine/runs.js.
  */
 
 /**

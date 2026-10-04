@@ -46,9 +46,10 @@ export function priceImpact(side, amountUsd, liquidityUsd) {
  * @param {number} a.now
  * @param {number|null} [a.signalEventId]
  * @param {number|null} [a.matchedTradeId]
+ * @param {number|null} [a.runId]
  * @returns {PaperTrade}
  */
-export function buildPendingTrade({ strategy, book = strategy, snapshot, rules, now, signalEventId = null, matchedTradeId = null }) {
+export function buildPendingTrade({ strategy, book = strategy, snapshot, rules, now, signalEventId = null, matchedTradeId = null, runId = null }) {
   if (snapshot.id === undefined) throw new Error('snapshot must be stored before opening a trade');
   return {
     strategy,
@@ -86,6 +87,7 @@ export function buildPendingTrade({ strategy, book = strategy, snapshot, rules, 
     aiProbability: null,
     aiModel: null,
     aiRationale: null,
+    runId,
   };
 }
 

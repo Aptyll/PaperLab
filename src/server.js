@@ -26,9 +26,10 @@ const TYPES = /** @type {Record<string, string>} */ ({
  * @param {import('./providers/provider.js').MarketProvider} deps.provider
  * @param {import('./app.js').App|null} deps.app
  * @param {boolean} deps.aiEnabled
+ * @param {number} deps.runId  The run being traded now. Pages show it unless ?run= asks for an earlier one.
  * @returns {http.Server}
  */
-export function createServer({ store, config, signals, provider, app, aiEnabled }) {
+export function createServer({ store, config, signals, provider, app, aiEnabled, runId }) {
   /** @type {Set<http.ServerResponse>} */
   const sseClients = new Set();
   app?.on('cycle', (c) => {
@@ -58,6 +59,12 @@ export function createServer({ store, config, signals, provider, app, aiEnabled 
     return s ? { price: s.priceUsd, liquidityUsd: s.liquidityUsd } : null;
   };
 
+  /** @param {URLSearchParams} q */
+  const runOf = (q) => {
+    const r = Number(q.get('run'));
+    return Number.isInteger(r) && r > 0 ? r : runId;
+  };
+
   /**
    * @param {string} pathname
    * @param {URLSearchParams} q
@@ -79,11 +86,13 @@ export function createServer({ store, config, signals, provider, app, aiEnabled 
         recentPolls: store.recentPolls(10),
         signals: signalMeta,
         randomStrategy: RANDOM_STRATEGY,
+        runId,
+        runs: store.runs(),
       };
     }
     if (pathname === '/api/tokens') {
       const since = Date.now() - Math.max(10 * 60_000, config.pollIntervalSec * 3000);
-      const open = [...store.trades({ status: 'open' }), ...store.trades({ status: 'pending' })];
+      const open = [...store.trades({ status: 'open', runId }), ...store.trades({ status: 'pending', runId })];
       const latest = store.latestPerPool(since);
       // Pools that dropped out of the latest trending list keep their old rank in
       // storage; blank it so ranks shown are always current.
@@ -101,19 +110,20 @@ export function createServer({ store, config, signals, provider, app, aiEnabled 
       const pool = decodeURIComponent(m[1]);
       return {
         snapshots: store.poolHistory(pool, { limit: 3000 }),
-        trades: store.trades({ poolAddress: pool, limit: 500 }),
+        trades: store.trades({ poolAddress: pool, runId: runOf(q), limit: 500 }),
       };
     }
     if (pathname === '/api/signals') return signalMeta;
     m = pathname.match(/^\/api\/strategies\/([a-z0-9-]+)$/);
     if (m) {
       const id = m[1];
-      const events = id === RANDOM_STRATEGY ? [] : store.recentSignalEvents(id, 5000);
+      const run = runOf(q);
+      const events = id === RANDOM_STRATEGY ? [] : store.recentSignalEvents(id, 5000, run);
       const why = new Map(events.map((e) => [e.id, e.reason]));
       return {
         events: events.slice(0, 200),
-        trades: store.trades({ book: id, limit: 500 }).map((t) => decorate(t, why)),
-        twinTrades: store.trades({ book: `${RANDOM_STRATEGY}:${id}`, limit: 500 }).map((t) => decorate(t, why)),
+        trades: store.trades({ book: id, runId: run, limit: 500 }).map((t) => decorate(t, why)),
+        twinTrades: store.trades({ book: `${RANDOM_STRATEGY}:${id}`, runId: run, limit: 500 }).map((t) => decorate(t, why)),
       };
     }
     if (pathname === '/api/trades') {
@@ -122,21 +132,25 @@ export function createServer({ store, config, signals, provider, app, aiEnabled 
           strategy: q.get('strategy') ?? undefined,
           book: q.get('book') ?? undefined,
           status: q.get('status') ?? undefined,
+          runId: runOf(q),
           limit: Math.min(Number(q.get('limit') ?? 500), 5000),
         })
         .map((t) => decorate(t, new Map()));
     }
     if (pathname === '/api/results') {
-      const trades = store.trades();
+      const run = runOf(q);
+      const trades = store.trades({ runId: run });
+      const settings = store.runs().find((r) => r.id === run)?.settings;
+      // A past run may include rules that have since been removed or renamed.
+      const ids = signals.map((s) => s.id).filter((id) => run === runId || trades.some((t) => t.strategy === id));
+      for (const t of trades) if (t.strategy !== RANDOM_STRATEGY && !ids.includes(t.strategy)) ids.push(t.strategy);
+      const bankroll = settings?.startingBankrollUsd ?? config.startingBankrollUsd;
+      const costs = { ...config.trade, ...settings?.trade };
       return {
-        startingBankrollUsd: config.startingBankrollUsd,
-        breakevenMovePct: breakevenMove(config.trade),
-        strategies: strategyResults({
-          trades,
-          strategies: signals.map((s) => s.id),
-          startingBankroll: config.startingBankrollUsd,
-          latestPrice,
-        }),
+        runId: run,
+        startingBankrollUsd: bankroll,
+        breakevenMovePct: breakevenMove(costs),
+        strategies: strategyResults({ trades, strategies: ids, startingBankroll: bankroll, latestPrice }),
         calibration: calibration(trades),
       };
     }

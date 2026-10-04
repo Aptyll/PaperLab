@@ -37,7 +37,9 @@ Every 60 seconds:
 
 Costs per trade, each way: 0.3% DEX fee, 1.5% execution slippage (delay, bots), and price impact from the pool's depth (constant-product math: $50 into a $100K pool costs about 0.1% more, into a $20K pool about 0.5%). Before impact, a token has to rise about 3.7% just to break even.
 
-If you upgrade from a version with different trade rules, the old database is renamed (for example `data/paper.v1-....sqlite`) and a fresh one starts, so results from different rules never mix.
+**Runs.** Every set of trading rules is its own run. If you change a rule (stop loss, trade size, a signal's settings) or update to a version that simulates trades differently, a new run starts with fresh $1,000 books, and trades still open from the old run finish under their old rules. Earlier runs stay in the database: pick one from the menu at the top to see its scoreboard exactly as it ended. Adding a new signal file does not start a new run.
+
+Updates never delete data. When a new version changes the database layout, it first saves a full copy (for example `data/paper.backup-v2-....sqlite`), then upgrades the database in place. Databases that an older version set aside (`data/paper.v1-....sqlite`) are merged back in as past runs and the files are left where they are.
 
 ## Settings
 
