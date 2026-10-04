@@ -20,6 +20,9 @@
   --series-7: #9085e9;
   --series-8: #e66767;
   --baseline: #8a8984;
+  --chart-grid: #16181b;
+  --chart-start: #3a3c42;
+  --chart-random: #8a8984;
   --mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
   --sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
 }
@@ -318,3 +321,10 @@ details[open] > summary { margin-bottom: 8px; }
 .btn-link:hover { border-color: var(--text-muted); }
 table.t.trades { max-width: 760px; }
 @media (max-width: 700px) { .first-screen { min-height: calc(100vh - 46px - 16px + 6px); } }
+.chart-tip { position: absolute; top: 10px; z-index: 4; pointer-events: none; min-width: 170px; background: color-mix(in srgb, var(--surface-1) 92%, transparent); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; box-shadow: 0 8px 24px -12px #000; }
+.chart-tip[hidden] { display: none; }
+.chart-tip .tip-time { color: var(--text-muted); font: 11px var(--mono); margin-bottom: 4px; }
+.chart-tip .tip-row { display: flex; justify-content: space-between; gap: 16px; padding: 1px 0; color: var(--text-secondary); }
+.chart-tip .tip-row b { font: 600 12px var(--mono); font-variant-numeric: tabular-nums; color: var(--text-primary); }
+.chart-tip .tip-row b.pos { color: var(--good); }
+.chart-tip .tip-row b.neg { color: var(--critical); }

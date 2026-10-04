@@ -374,32 +374,102 @@ function averageCurve(curves, start) {
   });
 }
 
+/** A line's balance at a moment: its latest point at or before it. @param {{time: number, value: number}[]} data @param {number} time */
+function valueAt(data, time) {
+  let lo = 0;
+  let hi = data.length - 1;
+  if (hi < 0 || data[0].time > time) return undefined;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (data[mid].time <= time) lo = mid;
+    else hi = mid - 1;
+  }
+  return data[lo].value;
+}
+
+/** The chart's time span: from the run's start to now, or to the run's last activity for a past run. @param {any} res */
+function chartSpan(res) {
+  return { from: res.clock?.startedAt ?? null, to: state.viewRun === null ? Date.now() : shownRun()?.lastActivityAt ?? null };
+}
+
 /**
- * Balance over time, one line per book.
+ * Balance over time, one line per book. Every line starts at the bankroll when
+ * the run starts and is carried flat to the end, so all lines share both edges.
  * @param {HTMLElement} el
- * @param {{color: string, curve: any[], dashed: boolean}[]} lines
- * @param {number} start
+ * @param {{color: string, curve: any[], dashed: boolean, label: string}[]} lines
+ * @param {number} start  Bankroll every book starts with.
+ * @param {{from?: number|null, to?: number|null}} [span]  Run start and end, ms.
  */
-function balanceChart(el, lines, start) {
+function balanceChart(el, lines, start, span = {}) {
   if (!lines.some((l) => l.curve.length)) {
     el.innerHTML = `<div class="empty chart-empty">No closed trades yet.</div>`;
     return;
   }
-  const fmt = (/** @type {number} */ v) => `$${v.toFixed(0)}`;
+  const times = lines.flatMap((l) => l.curve.map((p) => p.t));
+  const from = Math.min(span.from ?? Infinity, ...times) - 1000;
+  const to = Math.max(span.to ?? -Infinity, ...times);
+  const fmt = (/** @type {number} */ v) => dollars(v);
   const chart = baseChart(el, fmt);
-  for (const l of lines) {
-    if (!l.curve.length) continue;
+  chart.applyOptions({
+    grid: { vertLines: { visible: false }, horzLines: { color: css('--chart-grid') } },
+    rightPriceScale: { borderVisible: false, scaleMargins: { top: 0.12, bottom: 0.08 } },
+    timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false, rightOffset: 2, lockVisibleTimeRangeOnResize: true },
+    crosshair: {
+      mode: 0,
+      vertLine: { color: css('--text-muted'), width: 1, style: 3, labelVisible: false },
+      horzLine: { visible: false, labelVisible: false },
+    },
+    handleScale: { axisPressedMouseMove: false },
+  });
+  /** @type {{series: any, line: typeof lines[number], data: {time: number, value: number}[]}[]} */
+  const drawn = [];
+  // Random line first, so the strategies draw on top of it.
+  for (const l of [...lines].sort((a, b) => Number(b.dashed) - Number(a.dashed))) {
     const series = chart.addSeries(LWC.LineSeries, {
-      color: l.color,
-      lineWidth: 2,
+      color: l.dashed ? css('--chart-random') : l.color,
+      lineWidth: l.dashed ? 1 : 2,
       lineStyle: l.dashed ? 2 : 0,
       priceLineVisible: false,
       lastValueVisible: !l.dashed,
+      crosshairMarkerVisible: false,
       priceFormat: { type: 'custom', formatter: fmt, minMove: 0.01 },
     });
-    series.setData(toSeries([{ t: l.curve[0].t - 1000, v: start }, ...l.curve.map((p) => ({ t: p.t, v: p.equity }))]));
+    const last = l.curve.length ? l.curve[l.curve.length - 1].equity : start;
+    const data = toSeries([{ t: from, v: start }, ...l.curve.map((p) => ({ t: p.t, v: p.equity })), { t: to, v: last }]);
+    series.setData(data);
+    drawn.push({ series, line: l, data });
   }
+  // Where every book started: a faint reference line at the bankroll.
+  drawn[0].series.createPriceLine({ price: start, color: css('--chart-start'), lineWidth: 1, lineStyle: 1, axisLabelVisible: false, title: '' });
   chart.timeScale().fitContent();
+
+  // Hover: one quiet panel with every line's balance at that moment, best first.
+  const tip = document.createElement('div');
+  tip.className = 'chart-tip';
+  tip.hidden = true;
+  el.parentElement?.appendChild(tip);
+  chart.subscribeCrosshairMove((/** @type {any} */ p) => {
+    if (!p?.time || !p.point || p.point.x < 0) {
+      tip.hidden = true;
+      return;
+    }
+    const rows = drawn
+      .flatMap((d) => {
+        const v = valueAt(d.data, p.time);
+        return v === undefined ? [] : [{ line: d.line, v }];
+      })
+      .sort((a, b) => Number(a.line.dashed) - Number(b.line.dashed) || b.v - a.v);
+    tip.innerHTML = `<div class="tip-time">${esc(new Date(p.time * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</div>${rows
+      .map(
+        (r) => `<div class="tip-row${r.line.dashed ? ' muted' : ''}"><span class="rule-name">${r.line.dashed ? '<span class="key-dash"></span>' : `<span class="dot" style="background:${r.line.color}"></span>`}${esc(r.line.label)}</span><b class="${r.line.dashed ? '' : tone(r.v - start)}">${dollars(r.v)}</b></div>`,
+      )
+      .join('')}`;
+    tip.hidden = false;
+    // Keep the panel on the side away from the cursor.
+    const left = p.point.x < el.clientWidth / 2;
+    tip.style.left = left ? '' : '12px';
+    tip.style.right = left ? '72px' : '';
+  });
 }
 
 /**
@@ -543,10 +613,11 @@ async function scoreboardPage(view) {
   const el = document.getElementById('balance');
   if (!el) return;
   /** @type {{color: string, curve: any[], dashed: boolean}[]} */
-  const lines = rows.map((r) => ({ color: colorOf(r.strategy), curve: r.equityCurve, dashed: false }));
+  /** @type {{color: string, curve: any[], dashed: boolean, label: string}[]} */
+  const lines = rows.map((r) => ({ color: colorOf(r.strategy), curve: r.equityCurve, dashed: false, label: nameOf(r.strategy) }));
   const randoms = rows.map((r) => r.twin.equityCurve);
-  if (randoms.some((c) => c.length)) lines.push({ color: css('--baseline'), curve: averageCurve(randoms, res.startingBankrollUsd), dashed: true });
-  balanceChart(el, lines, res.startingBankrollUsd);
+  if (randoms.some((c) => c.length)) lines.push({ color: '', curve: averageCurve(randoms, res.startingBankrollUsd), dashed: true, label: 'Random (average)' });
+  balanceChart(el, lines, res.startingBankrollUsd, chartSpan(res));
 }
 
 /** Open trades first, best first, then the last 10 closed. Each trade once. @param {any[]} trades */
@@ -651,10 +722,11 @@ async function rulePage(view, id) {
     balanceChart(
       el,
       [
-        { color: colorOf(id), curve: r.equityCurve, dashed: false },
-        { color: css('--baseline'), curve: tw.equityCurve, dashed: true },
+        { color: colorOf(id), curve: r.equityCurve, dashed: false, label: nameOf(id) },
+        { color: '', curve: tw.equityCurve, dashed: true, label: 'Random' },
       ],
       res.startingBankrollUsd,
+      chartSpan(res),
     );
   }
 }
