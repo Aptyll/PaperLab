@@ -317,6 +317,10 @@ details[open] > summary { margin-bottom: 8px; }
   .view { padding: 16px 12px 32px; }
 }
 
-/* Home chart panel: no title, just the fold arrow. */
-.panel[data-panel="balance"] > summary { padding: 4px 0; }
+/* Home chart: always open, the biggest thing on screen. */
+.page.wide > .chart-box { margin: 4px 0 14px; }
+.guide-head { justify-content: space-between; margin-bottom: 14px; }
+.guide-head h1 { margin-bottom: 0; }
+.btn-link { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; padding: 5px 10px; font: 12px var(--sans); cursor: pointer; }
+.btn-link:hover { border-color: var(--text-muted); }
 table.t.trades { max-width: 760px; }

@@ -578,10 +578,10 @@ async function scoreboardPage(view) {
     ${pastRunBanner()}
     <div class="clock-row">${clockBar(res.clock)}${showPicker()}</div>
     ${rows.length ? `<div class="cards">${rows.map(strategyCard).join('')}</div>` : '<div class="empty">No strategies match this filter.</div>'}
-    ${panel('balance', '', `<div class="chart-box">
+    <div class="chart-box">
       <div class="chart fill" id="balance"></div>
       ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
-    </div>`)}
+    </div>
     ${panel('trades', `Trades <span class="count">${openCount ? `${openCount} open` : ''}</span>`, tradesList(mine), false)}
     ${calibrationBlock(res.calibration)}
   </div>`;
@@ -831,7 +831,7 @@ function guidePage(view) {
     .join('');
 
   view.innerHTML = `<div class="page guide">
-    <h1>Guide</h1>
+    <div class="page-head guide-head"><h1>Guide</h1><button type="button" class="btn-link" data-scroll="past-runs">Past runs (${runs.length}) ↓</button></div>
     <p><b>What this is.</b> A practice trading lab. It watches trending Solana memecoins and makes pretend trades. No wallet, no real money, no real orders.</p>
     <p><b>The question it answers.</b> Can a simple rule pick coins better than picking at random? Each strategy gets its own pretend ${bank}. Every time a strategy buys a coin, its own random picker buys a random coin at the same moment, with the same money and the same selling rules. If the strategy can't beat that, it's luck, not skill.</p>
     <p><b>How every trade works.</b> Spend $${t.sizeUsd}. Sell when the price is down ${p100(t.stopLossPct)}, up ${p100(t.takeProfitPct)}, or after ${t.timeLimitMin} minutes, whichever comes first (faster strategies use tighter numbers, listed below). Only coins with at least ${floor} of trading money behind them ("liquidity") are allowed. Each trade pays realistic costs: about ${cost} going in and again going out, more for smaller coins, and it buys at the next price check rather than instantly. If a coin's liquidity collapses, the trade counts as almost a total loss.</p>
@@ -848,7 +848,8 @@ function guidePage(view) {
     <p><b>The top-right number.</b> Your pretend ${bank} split evenly across the strategies shown: the average of their balances, including open trades. The dot next to it is live data: green is fresh, red is stale, grey is off. Click it to turn live data off or quit.</p>
     <p><b>Coins.</b> Dimmed coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin.</p>
     <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not.</p>
-    <h2>Past runs</h2>
+    <h2 id="past-runs">Past runs</h2>
+    <p class="muted">Click a run to see its scoreboard as it ended. "Back to now" returns to the current run.</p>
     ${runs.length ? `<table class="t compact runs-table"><tbody>${runRows}</tbody></table>` : '<div class="empty">None yet.</div>'}
     <p class="muted credits">Data: <a href="https://www.geckoterminal.com" target="_blank" rel="noopener">GeckoTerminal</a>. Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a>.</p>
   </div>`;
@@ -948,6 +949,8 @@ view.addEventListener('click', (e) => {
   if (target.closest('[data-run="current"]')) return openRun(null);
   const runRow = target.closest('[data-open-run]');
   if (runRow) return openRun(Number(runRow.getAttribute('data-open-run')));
+  const jump = target.closest('[data-scroll]');
+  if (jump) return document.getElementById(String(jump.getAttribute('data-scroll')))?.scrollIntoView({ behavior: 'smooth' });
   const live = target.closest('[data-live]');
   if (live) return void setLive(/** @type {HTMLButtonElement} */ (live));
   const tr = target.closest('[data-href]');
