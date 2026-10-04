@@ -1,139 +1,49 @@
 # Paper Lab
 
-A local research dashboard that paper-trades trending Solana memecoins. It watches the market, runs simple signal rules, opens **simulated** trades when a rule fires, and compares each rule against a random-pick baseline.
+**Find out which memecoin signals actually beat luck, before you risk real money.**
 
-**Paper only.** There is no wallet connection, no private key handling and no order execution anywhere in this code. It binds to `localhost` only.
+Paper Lab watches trending Solana memecoins and lets ten trading bots practice on them with pretend money. Each bot follows one simple rule, like "buy when far more wallets are buying than selling." Every bot also has a twin that buys random coins with the same money and the same exits. If a bot can't beat its random twin, its rule is probably luck.
 
-## Run it
+You get a live screen of what the bots are buying right now, how often each rule has really worked, and which coins are moving. You decide what, if anything, to trade.
 
-Needs Node 22.13 or newer (for the built-in SQLite). No build step.
+> **Paper trading only.** Paper Lab never connects to a wallet, never places a real trade, and makes no promise of profit. Memecoins are extremely risky, and most rules that look good early turn out to be noise.
 
-```bash
-npm install        # optional: only needed for type checking and AI scoring
-npm start          # live data from GeckoTerminal  ->  http://localhost:4317
-npm run demo       # fake market, no network, separate database
-npm test
-npm run check      # type check (JSDoc + // @ts-check)
-```
+## What you see
 
-`npm start` stores data in `data/paper.sqlite`. The demo writes to `data/demo.sqlite`, so fake trades never mix with real research data. Delete a file to start over.
+### The scoreboard
 
-On Windows, `launcher/windows/Create desktop icon.cmd` adds a Paper Lab desktop icon that starts the app hidden with live data off (`--paused`) and opens the page. Nothing is added to startup. The page opens maximized in Chrome. With live data off, a Turn On Live Data button sits over the chart; the dot at the top right opens a small menu to turn live data off or quit.
+![Scoreboard with ten bots, a balance chart, Hot now and Best coins](docs/screenshots/scoreboard.png)
 
-## Screens
+The home screen. Across the top is your portfolio and each bot's profit or loss, best first. The chart shows every bot's balance over time, with a B where it bought. The dotted line is the random pickers: a bot below it is doing worse than chance. **Hot now** lists coins a bot's rule fired on in the last 15 minutes, with that bot's real hit rate (or "too few trades to tell"). **Best coins** ranks every coin the bots bought this session by profit. Sessions (top right) restart every bot at $1,000.
 
-- **Top bar**: hidden until the mouse reaches the top edge (also shown on keyboard focus, while its menu is open, and while data is stale). It holds the nav and the live-data dot (green fresh, red stale, grey off; click for the menu).
-- **Scoreboard** (home): a slim strip with the portfolio (average balance of the active strategies, open trades included) and then each strategy's profit in its chart color, most first; hover one for its rule, exits, balance, lead over its random picker, win rate and go-live checks. The chart has a solid line per strategy and one grey dashed line averaging their random pickers, on an even time axis in local time; the latest buys (▲) and sells (▼) are marked on the lines and listed with tickers in the chart's corner, and hovering shows the balances and trades at that moment. Scroll down for the Trades panel and Best coins (every coin the strategies bought this run, ranked by profit including open trades).
-- **Strategy page** (`#/rule/<id>`): code-name, rule and exits; balance vs its random picker, the go-live checks and verdict, open and closed trades with the reason each one fired.
-- **Coins**: Our coins (the same ranking, all of it) and the trending list. Coins below the liquidity floor are dimmed; dots show which strategies hold a coin. Click one for its price chart with every buy and sell marked.
-- **Notes**: the research notebook. Each note is a dated Markdown file in `notes/` (readable on GitHub too), shown newest first. A new file shows up on refresh, no restart needed.
-- **Turnover** (on Coins and each coin's page): the last hour's volume as a share of market cap, labelled attention, distribution or fading by how it moves with price. The Turnover check under the trending list measures what prices did an hour after each label, from saved readings. The labels' cut-offs are first guesses in `src/engine/turnover.js`; no strategy trades on them.
-- **Guide**: every explanation in plain words, with numbers taken from the current settings, the strategy list, and past runs (click one to view it).
+### Trending coins
 
-## How it works
+![Trending coins table with price, liquidity, turnover and bot dots](docs/screenshots/coins.png)
 
-Every 60 seconds:
+Every trending Solana coin in one table: price, 5 minute change, liquidity, market cap, hourly volume, buyers per seller and age. Colored dots show which bots hold the coin right now. Dimmed coins have too little liquidity for the bots to touch. **Turnover** is the last hour's trading as a share of the coin's value, tagged Attention (new buyers coming in), Distribution (early holders may be selling) or Fading (interest leaving). These tags are first guesses that Paper Lab is still testing, so treat them as hints, not odds.
 
-1. **Fetch** the GeckoTerminal Solana trending pools (1 API call) plus any pools with open trades that left the list (1 call per 30 pools). A built-in limiter keeps it under 25 calls a minute (the free limit is 30).
-2. **Store** a snapshot per pool: price, market cap (or FDV when missing), liquidity, volume (5m/1h/6h/24h), buys/sells and unique buyers/sellers (5m/1h/24h), and pool creation time.
-3. **Fill** trades queued at the previous check, at this check's price, the way a person copying a signal by hand would buy about a minute later. If the price has already risen more than 5% since the signal, the trade is cancelled instead (cancelled trades cost nothing and are left out of results).
-4. **Close** open trades that hit stop loss (-20%), take profit (+40%) or the 60 minute limit. Prices are checked once per poll, so a fill happens at the observed price, which can be past the level. If a coin's pool loses more than 80% of its liquidity while held, the trade closes as **collapsed** and sells into what is left, which is usually a near-total loss.
-5. **Run signals** on every trending pool with at least **$100K liquidity** and at least one sell in the last 5 minutes (a guard against coins that can be bought but not sold). These match the live trading rules. When a signal fires it queues a $100 paper trade, unless that signal already holds the token, closed it in the last 30 minutes, or is out of cash.
-6. **Random twin.** Each time a signal queues a trade, that signal's random twin queues one on a randomly chosen token from the same filtered list, with the same size, costs, timing and exits. If the signal's trade is cancelled, so is the twin's. Every signal and every twin has its own $1,000. The scoreboard (home screen) shows each signal's "edge" over its twin and a verdict: too early, no edge, leaning, or clear.
+### A single coin
 
-Costs per trade, each way: 0.3% DEX fee, 1.5% execution slippage (delay, bots), and price impact from the pool's depth (constant-product math: $100 into a $100K pool costs about 0.2% more, into a $20K pool about 1%). Before impact, a token has to rise about 3.7% just to break even.
+![Coin page with key numbers, price chart and turnover chart](docs/screenshots/coin.png)
 
-**Runs.** Every set of trading rules is its own run. If you change a shared setting (costs, the coin filter, the bankroll), a strategy's settings, or update to a version that simulates trades differently, a new run starts with fresh $1,000 books, and trades still open from the old run finish under their old rules. Earlier runs stay in the database: open one from the Guide page to see its scoreboard exactly as it ended. Adding or retiring a strategy, or adding a signal file, does not start a new run.
+Click any coin to see it up close. The top row gives the numbers that matter most at a glance: price, liquidity, market cap, volume, turnover and buyers versus sellers in the last 5 minutes. The price chart marks every bot buy and every sell, green when the trade made money and red when it lost. The turnover chart below shows whether trading interest is rising or cooling. At the bottom is every paper trade on this coin, random picks included.
 
-Updates never delete data. When a new version changes the database layout, it first saves a full copy (for example `data/paper.backup-v2-....sqlite`), then upgrades the database in place. Databases that an older version set aside (`data/paper.v1-....sqlite`) are merged back in as past runs and the files are left where they are.
+### Research notes
 
-## Strategies
+![Notes page with dated research entries](docs/screenshots/notes.png)
 
-A strategy is a code-name, one signal (a file in `src/signals/`), and optionally its own signal settings and exits (trade size, stop loss, take profit, time limit). They are listed in `src/strategies.js`:
+A dated notebook of ideas and findings, newest first. Notes cover what Paper Lab can measure today and what new data might help. Each note is a plain text file in the [`notes/`](notes) folder, so you can also read them right here on GitHub. A **Guide** page in the app explains every number and label in plain words.
 
-| Code-name | Rule | Trade | Exits |
-|---|---|---|---|
-| Falcon | Buy rush (`buyer-seller-ratio`) | $100 | −20% / +40% / 60 min |
-| Badger | Deep pool (`liquidity-mcap-ratio`) | $100 | −20% / +40% / 60 min |
-| Cobra | Volume burst (`volume-spike`) | $100 | −20% / +40% / 60 min |
-| Hawk | Buy rush | $100 | −10% / +20% / 20 min |
-| Otter | Deep pool | $100 | −10% / +20% / 20 min |
-| Viper | Volume burst | $100 | −10% / +20% / 20 min |
-| Eagle | Buy rush | $250 | −25% / +60% / 120 min |
-| Bison | Deep pool | $250 | −25% / +60% / 120 min |
-| Mamba | Volume burst | $250 | −25% / +60% / 120 min |
+## How to read the results
 
-Each strategy has its own $1,000 and its own random twin with the same exits. Falcon, Badger and Cobra keep the signal ids as their ids, so trades recorded before strategies existed stay with them. Settings are fixed per code-name: to try other numbers, add a new code-name; to stop one, set `retired: true` (it stops buying, open trades finish, history stays). The "could be luck" test gets stricter with the number of strategies in the run (a Bonferroni bar: 2.0 for one, about 2.4 for three, 2.7 for six, 2.8 for nine), and retired ones still count.
+- **Beat the twin, not zero.** In a falling market every bot loses. What matters is whether a bot loses less, or wins more, than its random twin.
+- **Wait for enough trades.** Paper Lab says "too few trades to tell" until a rule has a real track record. A few lucky trades prove nothing.
+- **Costs are included.** Every pretend trade pays fees and slippage, and buys a minute after the signal, the way a person copying it by hand would. That makes results more honest, and usually worse.
 
-## Settings
+## Getting started
 
-Copy what you want to change into `config.local.json` (git-ignored). Example:
+Paper Lab runs on your own computer and is free to use. It needs Node (a free program) and takes about 10 minutes to set up the first time. Follow the step-by-step [setup guide](SETUP.md).
 
-```json
-{
-  "pollIntervalSec": 60,
-  "trade": { "sizeUsd": 100, "stopLossPct": 0.2, "takeProfitPct": 0.4, "timeLimitMin": 60 },
-  "universe": { "minLiquidityUsd": 100000, "minSellsM5": 1 },
-  "signalParams": { "volume-spike": { "minMultiple": 4 } }
-}
-```
+## Under the hood
 
-All defaults are in `src/config.js`.
-
-## Adding a signal
-
-Add one file to `src/signals/`. It is picked up on restart. A signal no strategy uses trades as its own strategy, under its own id and name, with its own $1,000 and random twin; add entries to `src/strategies.js` for code-names or other exits.
-
-```js
-// src/signals/price-momentum.js
-// @ts-check
-/** @type {import('../types.js').SignalModule} */
-export default {
-  id: 'price-momentum',
-  name: 'Price Momentum',
-  description: 'Fires when price is up strongly over 5 minutes.',
-  params: { minChangePct: 10 },
-  evaluate({ snapshot, history, params }) {
-    const c = snapshot.priceChangeM5;
-    if (c === null) return { fired: false, value: 0, reason: 'no data' };
-    return { fired: c >= params.minChangePct, value: c, reason: `up ${c.toFixed(1)}% in 5m` };
-  },
-};
-```
-
-`history` holds earlier snapshots of the same pool (oldest first, up to 6 hours) if a signal needs trends. Files starting with `_` are ignored.
-
-## AI scoring (off by default, costs money)
-
-When enabled, every newly opened trade is sent to Claude with its snapshot and recent history. Claude returns a probability that the trade closes in profit, and that probability is stored with the trade. The scoreboard then shows a calibration table and a Brier score against a "base rate" baseline.
-
-To turn it on:
-
-1. `npm install` (installs the optional `@anthropic-ai/sdk`)
-2. `export ANTHROPIC_API_KEY=...`
-3. Set `"ai": { "enabled": true }` in `config.local.json` (model and effort are configurable there too)
-
-Each trade is one API call. Scoring runs in the background and never delays polling.
-
-## Layout
-
-```
-src/
-  main.js              entry point (Node version check)
-  run.js               wires everything together and starts the server
-  config.js            defaults + config.local.json
-  types.js             JSDoc types: Snapshot, SignalModule, PaperTrade, ...
-  db.js                SQLite schema and queries (node:sqlite)
-  app.js               polling loop + background AI scoring
-  server.js            localhost JSON API, server-sent events, static files
-  providers/           geckoterminal.js (live), simulated.js (demo)
-  signals/             one file per signal
-  engine/              cycle.js (one poll), paper.js (trade math), stats.js (results)
-  ai/scorer.js         optional Claude scoring
-public/                dashboard (plain HTML/CSS/JS, vendored Lightweight Charts)
-test/                  node:test tests
-```
-
-## Data source and credits
-
-Market data: [GeckoTerminal](https://www.geckoterminal.com) public API (free, no key, about 30 calls a minute). Charts: [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/) (Apache 2.0, license in `public/vendor/`).
+Built with Node and its built-in SQLite database, with no build step. Market data comes from the free [GeckoTerminal](https://www.geckoterminal.com) API, checked every 60 seconds. Charts use [TradingView Lightweight Charts](https://www.tradingview.com/lightweight-charts/). It only runs on your own computer (localhost). Developer details, the full list of bots and their rules, and how to add a new rule are in [docs/DEVELOPERS.md](docs/DEVELOPERS.md).
