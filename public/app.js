@@ -209,8 +209,9 @@ function renderTopbar() {
     ].join(' ');
     light.className = `health ${healthy && !failed ? 'ok' : 'bad'}`;
   }
+  // The bar hides until hovered, but stays out while data is stale so the red dot is seen.
+  document.querySelector('.topbar')?.classList.toggle('pinned', s.live && !(healthy && !failed));
   renderMenu();
-  renderPortfolio();
   const r = route();
   const here = r.page === 'coins' || r.page === 'coin' ? 'coins' : r.page === 'guide' ? 'guide' : 'home';
   for (const a of document.querySelectorAll('.nav a')) a.classList.toggle('active', a.getAttribute('data-nav') === here);
@@ -223,23 +224,15 @@ function renderMenu() {
     <button type="button" role="menuitem" data-quit>Quit Paper Lab</button>`;
 }
 
-/** Pretend $1,000 split across the strategies on screen: the average of their balances. */
-function renderPortfolio() {
-  const el = /** @type {HTMLElement} */ (document.getElementById('portfolio'));
-  const rows = state.results ? shownStrategies(state.results.strategies) : [];
-  if (!rows.length) {
-    el.textContent = '';
-    el.title = '';
-    return;
-  }
-  const start = state.results.startingBankrollUsd;
+/** Pretend $1,000 split across the active strategies: the average of their balances. @param {any[]} rows */
+function portfolioTick(rows) {
+  if (!rows.length) return '';
   const avg = rows.reduce((a, r) => a + r.equityUsd, 0) / rows.length;
-  el.textContent = dollars(avg);
-  el.className = `portfolio ${avg > start + 0.5 ? 'pos' : avg < start - 0.5 ? 'neg' : ''}`;
-  el.title = [
+  const tip = [
     `Average balance of the ${rows.length} active strateg${rows.length === 1 ? 'y' : 'ies'}, including open trades${state.viewRun === null ? '' : ' (past run)'}:`,
     ...rows.map((r) => `${nameOf(r.strategy)}  ${dollars(r.equityUsd)}`),
   ].join('\n');
+  return `<div class="tick total" title="${esc(tip)}"><span class="tick-name">Portfolio</span><span class="tick-v">${dollars(avg)}</span></div>`;
 }
 
 // ---------- runs ----------
@@ -567,7 +560,7 @@ function balanceChart(el, lines, start, span = {}) {
     const here = events.filter((e) => e.t >= lo && e.t <= hi).slice(0, 6);
     tip.innerHTML = `<div class="tip-time">${esc(new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</div>${rows
       .map(
-        (r) => `<div class="tip-row${r.line.dashed ? ' muted' : ''}"><span class="rule-name">${r.line.dashed ? '<span class="key-dash"></span>' : `<span class="dot" style="background:${r.line.color}"></span>`}${esc(r.line.label)}</span><b class="${r.line.dashed ? '' : tone(r.v - start)}">${dollars(r.v)}</b></div>`,
+        (r) => `<div class="tip-row${r.line.dashed ? ' muted' : ''}"><span class="rule-name">${r.line.dashed ? '<span class="key-dash"></span>' : `<span class="dot" style="background:${r.line.color}"></span>`}${esc(r.line.label)}</span><b style="${r.line.dashed ? '' : `color:${r.line.color}`}">${dollars(r.v)}</b></div>`,
       )
       .join('')}${here.length ? `<div class="tip-trades">${here.map(eventRow).join('')}</div>` : ''}`;
     tip.hidden = false;
@@ -613,9 +606,9 @@ function priceChart(el, snapshots, trades) {
 
 // ---------- shared pieces ----------
 
-// The HUD reads top to bottom by importance: each strategy's profit
-// (largest, brightest), in its chart color, then how it compares with random.
-// Everything else is in the card's hover text; explanations live on the Guide.
+// The HUD reads left to right by importance: the portfolio, then each
+// strategy's profit in its chart color, most first. Everything else is in the
+// hover text; explanations live on the Guide.
 
 /** Big number: how far ahead of random. Whole dollars on cards, cents on the strategy page. @param {any} r */
 function heroNumber(r, cents = false) {
@@ -651,14 +644,10 @@ function cardTip(r) {
   ].join('\n');
 }
 
-/** @param {any} r */
-function strategyCard(r) {
-  const p = pnlOf(r);
-  const e = edgeUsd(r);
-  return `<a class="card" href="#/rule/${esc(r.strategy)}" style="--c:${colorOf(r.strategy)}" title="${esc(cardTip(r))}">
-    <div class="card-name">${esc(nameOf(r.strategy))}</div>
-    <div class="hero ${tone(Math.round(p))}">${signedDollars(p)}</div>
-    <div class="card-sub"><span class="${tone(Math.round(e))}">${signedDollars(e)}</span> vs random</div>
+/** One strategy in the strip: code-name and profit, in its chart color. Details on hover. @param {any} r */
+function strategyTick(r) {
+  return `<a class="tick" href="#/rule/${esc(r.strategy)}" style="--c:${colorOf(r.strategy)}" title="${esc(cardTip(r))}">
+    <span class="tick-name">${esc(nameOf(r.strategy))}</span><span class="tick-v">${signedDollars(pnlOf(r))}</span>
   </a>`;
 }
 
@@ -727,7 +716,7 @@ async function scoreboardPage(view) {
   view.innerHTML = `<div class="page wide">
     <div class="first-screen">
       ${pastRunBanner()}
-      ${rows.length ? `<div class="cards">${rows.map(strategyCard).join('')}</div>` : '<div class="empty">No active strategies.</div>'}
+      ${rows.length ? `<div class="ticks">${portfolioTick(rows)}${rows.map(strategyTick).join('')}</div>` : '<div class="empty">No active strategies.</div>'}
       <div class="chart-box fill">
         <div class="chart" id="balance"></div>
         ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
@@ -1032,12 +1021,13 @@ function guidePage(view) {
     <ul>${st.signals.map((/** @type {any} */ s) => `<li><b>${esc(s.name)}:</b> ${esc(ruleText(s))}</li>`).join('')}</ul>
     <p><b>Strategies.</b> A strategy is a code-name, one rule, and its own selling numbers. Settings never change under a code-name; trying new numbers means a new code-name, and a retired one stops buying but keeps its history.</p>
     <table class="t compact guide-table"><thead><tr><th>Code-name</th><th>Rule</th><th>Stop / target / time</th><th></th></tr></thead><tbody>${strategies}</tbody></table>
-    <p><b>Reading a card.</b> Cards are in the same color as their line on the chart, most profit on the left. The big number is the strategy's profit so far, open trades counted as if sold now. Under it: how many dollars it is ahead of (or behind) its random picker on finished trades. Hover a card for its rule, balance, win rate and go-live checks.</p>
+    <p><b>The strip above the chart.</b> First your portfolio, then each strategy in its chart color, most profit first. A strategy's number is its profit so far, open trades counted as if sold now. Hover one for its rule, balance, how far it is ahead of its random picker, win rate and go-live checks. The menu bar hides at the top of the screen; move the mouse to the top edge to bring it back.</p>
     <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
     <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Lines move when trades finish.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
-    <p><b>The top-right number.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades. The dot next to it is live data: green is fresh, red is stale, grey is off. Click it to turn live data off or quit.</p>
+    <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
+    <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>
     <p><b>Buys and sells.</b> The chart marks the latest buys (▲) and sells (▼) on each strategy's line, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
     <p><b>Best coins.</b> Below the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
@@ -1167,10 +1157,14 @@ async function setLive(b) {
 
 // The dot in the top bar opens a tiny menu: live data on/off, and quit.
 const menu = /** @type {HTMLElement} */ (document.getElementById('menu'));
-const closeMenu = () => (menu.hidden = true);
+const closeMenu = () => {
+  menu.hidden = true;
+  document.querySelector('.topbar')?.classList.remove('menu-open');
+};
 document.getElementById('health')?.addEventListener('click', (e) => {
   e.stopPropagation();
   menu.hidden = !menu.hidden;
+  document.querySelector('.topbar')?.classList.toggle('menu-open', !menu.hidden);
 });
 document.addEventListener('click', (e) => {
   if (!menu.hidden && !menu.contains(/** @type {Node} */ (e.target))) closeMenu();

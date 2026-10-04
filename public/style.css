@@ -56,7 +56,19 @@ a:hover { text-decoration: underline; }
   height: 46px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  /* Hidden until the mouse reaches the top edge (or it has keyboard focus, its menu is open, or data is stale). */
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  backdrop-filter: blur(6px);
+  transform: translateY(-100%);
+  transition: transform 0.16s ease;
 }
+.topbar-hot { position: fixed; top: 0; left: 0; right: 0; height: 12px; z-index: 19; }
+.topbar-hot:hover + .topbar, .topbar:hover, .topbar:focus-within, .topbar.menu-open, .topbar.pinned { transform: none; }
 .brand { color: var(--text-primary); font-weight: 700; letter-spacing: 0.1em; font-size: 12px; }
 .brand:hover { text-decoration: none; }
 .nav { display: flex; gap: 2px; margin-left: 10px; }
@@ -107,9 +119,6 @@ a:hover { text-decoration: underline; }
 .btn-live:hover { filter: brightness(1.1); }
 .btn-live.big { padding: 12px 26px; font-size: 15px; border-radius: 8px; box-shadow: 0 0 0 5px color-mix(in srgb, var(--good) 22%, transparent); }
 .btn-live:disabled { opacity: 0.5; cursor: default; }
-.portfolio { font: 600 18px var(--mono); font-variant-numeric: tabular-nums; color: var(--text-primary); letter-spacing: -0.01em; cursor: default; }
-.portfolio.pos { color: #3ddc6f; }
-.portfolio.neg { color: #ff6b6b; }
 .dot-menu { position: relative; display: inline-flex; }
 .health-btn { background: none; border: none; padding: 8px 2px 8px 8px; cursor: pointer; display: inline-flex; }
 .health-btn:hover .health { box-shadow: 0 0 0 3px var(--surface-2); }
@@ -167,32 +176,7 @@ table.t.compact td { padding: 5px 10px; }
 /* ---- HUD ---- */
 
 
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin-bottom: 14px; }
-.card {
-  position: relative;
-  display: block;
-  color: inherit;
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px 12px;
-  overflow: hidden;
-  transition: border-color 0.15s;
-}
-.card {
-  border-color: color-mix(in srgb, var(--c) 45%, var(--border));
-  background: color-mix(in srgb, var(--c) 9%, var(--surface-1));
-  border-top: 3px solid var(--c);
-}
-.card:hover { text-decoration: none; border-color: color-mix(in srgb, var(--c) 80%, var(--border)); border-top-color: var(--c); }
-.card-name { color: var(--c); font-weight: 700; }
-.card .hero { margin: 6px 0 4px; }
-.card-sub { color: var(--text-muted); font: 11px var(--sans); }
-.card-sub span { font: 600 12px var(--mono); }
 .card-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text-secondary); font-size: 12px; }
-.card-name { display: flex; align-items: center; gap: 7px; font-size: 14px; }
-.card-name b { font-weight: 600; }
-.card-rule { color: var(--text-muted); font-size: 11px; margin-top: 1px; }
 .hero { font: 600 24px/1.1 var(--mono); font-variant-numeric: tabular-nums; margin: 8px 0 8px; letter-spacing: -0.02em; white-space: nowrap; }
 .rule-hero .hero { font-size: 30px; }
 .hero.pos { color: #3ddc6f; }
@@ -320,7 +304,7 @@ details[open] > summary { margin-bottom: 8px; }
 
 /* Home chart: always open, the biggest thing on screen. */
 /* 46px top bar + the view's top padding, plus a few px so the Trades line never peeks in. */
-.first-screen { display: flex; flex-direction: column; min-height: calc(100vh - 46px - 22px + 6px); padding-bottom: 14px; }
+.first-screen { display: flex; flex-direction: column; min-height: calc(100vh - 22px + 6px); padding-bottom: 14px; }
 .first-screen > .chart-box.fill { flex: 1; display: flex; flex-direction: column; min-height: 280px; margin-top: 4px; }
 .first-screen > .chart-box.fill > .chart { flex: 1 1 0; height: auto; min-height: 0; }
 .guide-head { justify-content: space-between; margin-bottom: 14px; }
@@ -328,7 +312,7 @@ details[open] > summary { margin-bottom: 8px; }
 .btn-link { background: var(--surface-1); color: var(--text-primary); border: 1px solid var(--border); border-radius: 4px; padding: 5px 10px; font: 12px var(--sans); cursor: pointer; }
 .btn-link:hover { border-color: var(--text-muted); }
 table.t.trades { max-width: 760px; }
-@media (max-width: 700px) { .first-screen { min-height: calc(100vh - 46px - 16px + 6px); } }
+@media (max-width: 700px) { .first-screen { min-height: calc(100vh - 16px + 6px); } }
 .chart-tip { position: absolute; top: 10px; z-index: 4; pointer-events: none; min-width: 170px; background: color-mix(in srgb, var(--surface-1) 92%, transparent); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12px; box-shadow: 0 8px 24px -12px #000; }
 .chart-tip[hidden] { display: none; }
 .chart-tip .tip-time { color: var(--text-muted); font: 11px var(--mono); margin-bottom: 4px; }
@@ -359,3 +343,16 @@ table.t.trades { max-width: 760px; }
 .more-btn { margin: 8px 0 0 10px; }
 @media (max-width: 700px) { .chart-feed { display: none; } }
 .addr { font-size: 11px; }
+
+/* ---- strategy strip: portfolio first, then each strategy, most profit first ---- */
+.ticks { display: flex; flex-wrap: wrap; align-items: stretch; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
+.tick { display: flex; flex-direction: column; gap: 1px; padding: 4px 18px 8px; color: inherit; border-left: 1px solid var(--border); min-width: 0; }
+.tick:first-child { border-left: none; padding-left: 2px; }
+a.tick:hover { text-decoration: none; background: color-mix(in srgb, var(--c) 10%, transparent); }
+.tick-name { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--c, var(--text-muted)); }
+.tick-v { font: 600 20px/1.15 var(--mono); font-variant-numeric: tabular-nums; color: var(--c, var(--text-primary)); white-space: nowrap; }
+.tick.total { cursor: default; padding-right: 26px; }
+.tick.total .tick-name { color: var(--text-muted); text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; }
+.tick.total .tick-v { font-size: 26px; color: var(--text-primary); }
+@media (max-width: 700px) { .tick { padding: 4px 10px 6px; } .tick-v { font-size: 16px; } .tick.total .tick-v { font-size: 20px; } }
+.card-rule { color: var(--text-muted); font-size: 11px; margin-top: 1px; }
