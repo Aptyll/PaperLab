@@ -49,16 +49,19 @@ Updates never delete data. When a new version changes the database layout, it fi
 
 A strategy is a code-name, one signal (a file in `src/signals/`), and optionally its own signal settings and exits (trade size, stop loss, take profit, time limit). They are listed in `src/strategies.js`:
 
-| Code-name | Rule | Exits |
-|---|---|---|
-| Falcon | Buy rush (`buyer-seller-ratio`) | −20% / +40% / 60 min |
-| Badger | Deep pool (`liquidity-mcap-ratio`) | −20% / +40% / 60 min |
-| Cobra | Volume burst (`volume-spike`) | −20% / +40% / 60 min |
-| Hawk | Buy rush | −10% / +20% / 20 min |
-| Otter | Deep pool | −10% / +20% / 20 min |
-| Viper | Volume burst | −10% / +20% / 20 min |
+| Code-name | Rule | Trade | Exits |
+|---|---|---|---|
+| Falcon | Buy rush (`buyer-seller-ratio`) | $100 | −20% / +40% / 60 min |
+| Badger | Deep pool (`liquidity-mcap-ratio`) | $100 | −20% / +40% / 60 min |
+| Cobra | Volume burst (`volume-spike`) | $100 | −20% / +40% / 60 min |
+| Hawk | Buy rush | $100 | −10% / +20% / 20 min |
+| Otter | Deep pool | $100 | −10% / +20% / 20 min |
+| Viper | Volume burst | $100 | −10% / +20% / 20 min |
+| Eagle | Buy rush | $250 | −25% / +60% / 120 min |
+| Bison | Deep pool | $250 | −25% / +60% / 120 min |
+| Mamba | Volume burst | $250 | −25% / +60% / 120 min |
 
-Each strategy has its own $1,000 and its own random twin with the same exits. Falcon, Badger and Cobra keep the signal ids as their ids, so trades recorded before strategies existed stay with them. Settings are fixed per code-name: to try other numbers, add a new code-name; to stop one, set `retired: true` (it stops buying, open trades finish, history stays). The "could be luck" test gets stricter with the number of strategies in the run (a Bonferroni bar: 2.0 for one, about 2.4 for three, 2.7 for six), and retired ones still count.
+Each strategy has its own $1,000 and its own random twin with the same exits. Falcon, Badger and Cobra keep the signal ids as their ids, so trades recorded before strategies existed stay with them. Settings are fixed per code-name: to try other numbers, add a new code-name; to stop one, set `retired: true` (it stops buying, open trades finish, history stays). The "could be luck" test gets stricter with the number of strategies in the run (a Bonferroni bar: 2.0 for one, about 2.4 for three, 2.7 for six, 2.8 for nine), and retired ones still count.
 
 ## Settings
 

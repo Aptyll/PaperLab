@@ -86,7 +86,7 @@ function normalTail(z) {
  * goes away. One strategy: 2 (about a 2% chance by luck). Testing more
  * strategies gives luck more tries, so the bar rises to keep the chance that
  * any of them clears it by luck about the same (Bonferroni):
- * about 2.4 for three strategies, 2.7 for six.
+ * about 2.4 for three strategies, 2.7 for six, 2.8 for nine.
  * @param {number} tested  Strategies tested in the run, retired ones included.
  */
 export function luckBar(tested) {

@@ -500,10 +500,10 @@ test('controls: only this page can turn live data on or off, or quit', async () 
   store.close();
 });
 
-test('the six strategies continue the run the original three were in', async () => {
+test('the nine strategies continue the run the original three were in', async () => {
   const signals = await loadSignals();
   const strategies = resolveStrategies(STRATEGY_DEFS, signals, DEFAULTS.trade);
-  assert.deepEqual(strategies.map((s) => s.codeName), ['Falcon', 'Badger', 'Cobra', 'Hawk', 'Otter', 'Viper']);
+  assert.deepEqual(strategies.map((s) => s.codeName), ['Falcon', 'Badger', 'Cobra', 'Hawk', 'Otter', 'Viper', 'Eagle', 'Bison', 'Mamba']);
   const store = new Store(':memory:');
   // Settings exactly as the previous version recorded them: one entry per rule, shared exits.
   const legacy = {
@@ -516,7 +516,7 @@ test('the six strategies continue the run the original three were in', async () 
   const old = Number(
     store.db.prepare("INSERT INTO runs (started_at, origin, settings) VALUES (1, 'live', ?)").run(JSON.stringify(legacy)).lastInsertRowid,
   );
-  assert.equal(store.beginRun(runSettings(DEFAULTS, strategies), 2), old, 'adding Hawk, Otter and Viper keeps the run');
+  assert.equal(store.beginRun(runSettings(DEFAULTS, strategies), 2), old, 'adding the newer strategies keeps the run');
   store.close();
 });
 
@@ -541,6 +541,29 @@ test('each strategy trades with its own exits and its own random picker', async 
   assert.equal(hawkRandom?.stopLossPct, 0.1, 'the random picker uses the same exits');
   assert.equal(r.queued.find((t) => t.strategy === 'buyer-seller-ratio')?.stopLossPct, 0.2);
   assert.equal(store.recentSignalEvents('hawk', 5, deps.runId).length, 1);
+  const eagle = r.queued.find((t) => t.strategy === 'eagle');
+  assert.equal(eagle?.sizeUsd, 250);
+  assert.equal(eagle?.timeLimitMs, 120 * 60_000);
+  assert.equal(r.queued.find((t) => t.book === 'random:eagle')?.sizeUsd, 250, 'the random picker spends the same');
+  assert.equal(r.queued.find((t) => t.strategy === 'hawk')?.sizeUsd, 100);
+  store.close();
+});
+
+test('a $250 strategy stops buying when less than $250 is left', async () => {
+  const store = new Store(':memory:');
+  let now = 0;
+  let n = 0;
+  // A new coin with a buying rush every poll; earlier ones stay listed at a flat price, so nothing sells.
+  const pools = () => Array.from({ length: n + 1 }, (_, i) => snap({ ts: now, poolAddress: `P${i}`, trendingRank: 1, buyersM5: 50, sellersM5: 5 }));
+  const strategies = resolveStrategies(STRATEGY_DEFS.filter((d) => d.id === 'eagle'), await bsr(), DEFAULTS.trade);
+  const deps = { store, provider: fakeProvider(() => now, pools), strategies, config: DEFAULTS, now: () => now, rand: () => 0, runId: store.beginRun(runSettings(DEFAULTS, strategies), 0) };
+  const bought = [];
+  for (n = 0; n < 6; n++) {
+    now = n * 60_000;
+    const r = await runCycle(deps);
+    bought.push(r.queued.filter((t) => t.strategy === 'eagle').length);
+  }
+  assert.deepEqual(bought, [1, 1, 1, 1, 0, 0], '$1,000 covers four $250 trades at once');
   store.close();
 });
 

@@ -17,7 +17,7 @@
 /** @type {any} */
 const LWC = /** @type {any} */ (window).LightweightCharts;
 
-const SERIES_VARS = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5', '--series-6', '--series-7', '--series-8'];
+const SERIES_VARS = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5', '--series-6', '--series-7', '--series-8', '--series-9'];
 const css = (/** @type {string} */ v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 
 const state = {
@@ -114,8 +114,8 @@ const ago = (ms) => (ms ? duration(Date.now() - ms) : '–');
 /** @param {number|null|undefined} ms */
 const clock = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '–');
 
-/** Exits in a few characters, e.g. "−20% / +40% / 60 min". @param {any} t */
-const exitsText = (t) => `−${p100(t.stopLossPct)} / +${p100(t.takeProfitPct)} / ${t.timeLimitMin} min`;
+/** Trade size and exits in a few characters, e.g. "$100 · −20% / +40% / 60 min". @param {any} t */
+const exitsText = (t) => `$${t.sizeUsd} · −${p100(t.stopLossPct)} / +${p100(t.takeProfitPct)} / ${t.timeLimitMin} min`;
 
 // ---------- strategies ----------
 
@@ -632,7 +632,7 @@ class GapMarks {
         const pad = 6 * r;
         // Kept inside the pane so a gap near either edge still reads.
         const lx = Math.max(pad, Math.min(s.bitmapSize.width - w - pad, left ? x - w - pad : x - w / 2));
-        // Along the bottom edge, clear of the time view buttons and the corner feed.
+        // Along the bottom edge, clear of the time view buttons.
         const y = s.bitmapSize.height - 20 * s.verticalPixelRatio;
         ctx.fillRect(lx - 3 * r, y - 2 * r, w + 6 * r, 14 * r);
         ctx.fillStyle = css('--text-muted');
@@ -673,8 +673,6 @@ function rangePick() {
 
 /** Only the latest buys and sells get a mark, so the chart stays readable; hovering shows any moment's. */
 const CHART_MARKS = 12;
-/** The latest few also scroll by in the chart's corner, with tickers, like a game's kill feed. */
-const FEED_ITEMS = 5;
 
 /**
  * Balance over time, one line per book. Every line starts at the bankroll when
@@ -848,14 +846,6 @@ function balanceChart(el, lines, start, span = {}) {
     `<div class="tip-row"><span class="rule-name"><span class="mk ${e.sell ? 'sell' : 'buy'}" style="--c:${e.line.color}"></span><b class="sym">${esc(e.trade.symbol)}</b><span class="muted">${esc(e.line.label)}</span></span>${
       e.sell ? `<b class="${tone(e.trade.pnlPct)}">${pct(e.trade.pnlPct, 0)}</b>` : '<span class="muted">buy</span>'
     }</div>`;
-  const feed = document.createElement('div');
-  feed.className = 'chart-feed';
-  feed.innerHTML = events
-    .slice(0, FEED_ITEMS)
-    .map(eventRow)
-    .join('');
-  if (events.length) el.parentElement?.appendChild(feed);
-
   // Hover: one quiet panel with every line's balance at that moment, best
   // first, then the buys and sells right under the cursor.
   const tip = document.createElement('div');
@@ -865,10 +855,8 @@ function balanceChart(el, lines, start, span = {}) {
   chart.subscribeCrosshairMove((/** @type {any} */ p) => {
     if (!p?.time || !p.point || p.point.x < 0) {
       tip.hidden = true;
-      feed.hidden = false;
       return;
     }
-    feed.hidden = true;
     const ms = p.time * 1000;
     const rows = drawn
       .map((d) => ({ line: d.line, v: balanceAt(d.real, ms) }))
@@ -1441,11 +1429,11 @@ function guidePage(view) {
     <div class="page-head guide-head"><h1>Guide</h1><button type="button" class="btn-link" data-scroll="past-runs">Past runs (${runs.length}) ↓</button></div>
     <p><b>What this is.</b> A practice trading lab. It watches trending Solana memecoins and makes pretend trades. No wallet, no real money, no real orders.</p>
     <p><b>The question it answers.</b> Can a simple rule pick coins better than picking at random? Each strategy gets its own pretend ${bank}. Every time a strategy buys a coin, its own random picker buys a random coin at the same moment, with the same money and the same selling rules. If the strategy can't beat that, it's luck, not skill.</p>
-    <p><b>How every trade works.</b> Spend $${t.sizeUsd}. Sell when the price is down ${p100(t.stopLossPct)}, up ${p100(t.takeProfitPct)}, or after ${t.timeLimitMin} minutes, whichever comes first (faster strategies use tighter numbers, listed below). Only coins with at least ${floor} of trading money behind them ("liquidity") are allowed. Each trade pays realistic costs: about ${cost} going in and again going out, more for smaller coins, and it buys at the next price check rather than instantly. If a coin's liquidity collapses, the trade counts as almost a total loss.</p>
+    <p><b>How every trade works.</b> Spend $${t.sizeUsd}. Sell when the price is down ${p100(t.stopLossPct)}, up ${p100(t.takeProfitPct)}, or after ${t.timeLimitMin} minutes, whichever comes first. Some strategies use other numbers: faster ones trade tighter, bigger ones spend more and hold longer (listed below). Only coins with at least ${floor} of trading money behind them ("liquidity") are allowed. Each trade pays realistic costs: about ${cost} going in and again going out, more for smaller coins, and it buys at the next price check rather than instantly. If a coin's liquidity collapses, the trade counts as almost a total loss.</p>
     <p><b>The rules.</b></p>
     <ul>${st.signals.map((/** @type {any} */ s) => `<li><b>${esc(s.name)}:</b> ${esc(ruleText(s))}</li>`).join('')}</ul>
     <p><b>Strategies.</b> A strategy is a code-name, one rule, and its own selling numbers. Settings never change under a code-name; trying new numbers means a new code-name, and a retired one stops buying but keeps its history.</p>
-    <table class="t compact guide-table"><thead><tr><th>Code-name</th><th>Rule</th><th>Stop / target / time</th><th></th></tr></thead><tbody>${strategies}</tbody></table>
+    <table class="t compact guide-table"><thead><tr><th>Code-name</th><th>Rule</th><th>Trade · stop / target / time</th><th></th></tr></thead><tbody>${strategies}</tbody></table>
     <p><b>The strip above the chart.</b> First your portfolio, then each strategy in its chart color, most profit first. A strategy's number is its profit so far, open trades counted as if sold now. Hover one for its rule, balance, how far it is ahead of its random picker, win rate and go-live checks. The menu bar hides at the top of the screen; move the mouse to the small handle at the top edge to bring it back.</p>
     <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
@@ -1455,7 +1443,7 @@ function guidePage(view) {
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale. The square icon beside the dot switches full screen on and off (Esc also leaves it).</p>
-    <p><b>Buys and sells.</b> The chart marks the latest buys (hollow ring) and sells (solid dot) on each strategy's line, with a faint dotted line from each sell back to its buy, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
+    <p><b>Buys and sells.</b> The chart marks the latest buys (hollow ring) and sells (solid dot) on each strategy's line, with a faint dotted line from each sell back to its buy. Hover anywhere on the chart to see the balances and the trades, with tickers, at that moment; move the mouse off the chart and the panel goes away.</p>
     <p><b>Hot now.</b> Top right: coins a strategy's rule fired on in the last 15 minutes, the ones the strategies are buying right now. Coins where more different rules agree come first (a fast and a slow version of one rule count once), then the best odds. The odds are measured, not guessed: how often that strategy's past paper trades reached its take profit before its stop loss or time limit, out of how many trades, next to its random picker's rate for comparison. Under 10 trades it says so instead of showing a rate. The percent on the right is how far the price has moved since the first signal, so you can see if you'd be late. Hover a coin for every strategy's numbers. It's there to point you at coins worth a look; you decide.</p>
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
