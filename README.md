@@ -24,6 +24,8 @@ Click any coin to see it up close. The top row gives the numbers that matter mos
 
 ## Research notes
 
+A dated notebook of ideas and findings, newest first. Notes cover what Paper Lab can measure today and what new data might help. Each note is a plain text file in the [`notes/`](notes) folder, so you can also read them right here on GitHub. A **Guide** page in the app explains every number and label in plain words.
+
 ![Notes page with dated research entries](docs/screenshots/notes.png)
 
 ## How to read the results
