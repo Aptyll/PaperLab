@@ -14,7 +14,7 @@ const state = {
   /** @type {any} */ status: null,
   /** @type {any[]} */ tokens: [],
   /** @type {string|null} */ selectedPool: null,
-  tab: 'market',
+  tab: 'home',
   /** @type {Record<string, string>} */ colors: {},
   /** @type {any[]} */ charts: [],
 };
@@ -99,9 +99,14 @@ function renderTopbar() {
   src.className = `badge ${s.demo ? 'badge-demo' : 'badge-live'}`;
   const c = s.lastCycle;
   const ps = /** @type {HTMLElement} */ (document.getElementById('poll-status'));
-  if (!c) ps.textContent = 'waiting for first poll…';
-  else if (c.ok) ps.innerHTML = `last poll ${esc(clock(c.ts))} · ${c.snapshots} pools · every ${s.pollIntervalSec}s`;
-  else ps.innerHTML = `<span class="neg">poll failed ${esc(clock(c.ts))}: ${esc(c.error)}</span>`;
+  const lastOk = s.recentPolls.find((/** @type {any} */ p) => p.ok)?.ts ?? null;
+  const ageSec = lastOk ? Math.round((Date.now() - lastOk) / 1000) : null;
+  const healthy = ageSec !== null && ageSec < 180;
+  const light = `<span class="health ${healthy ? 'ok' : 'bad'}" title="${healthy ? 'Data is fresh' : 'No fresh data for 3+ minutes: results are paused until it recovers'}"></span>`;
+  const ageText = ageSec === null ? 'no data yet' : `data ${ageSec < 120 ? `${ageSec}s` : `${Math.round(ageSec / 60)}m`} ago`;
+  if (!c) ps.innerHTML = `${light} waiting for first poll…`;
+  else if (c.ok) ps.innerHTML = `${light} ${ageText} · ${c.snapshots} pools · every ${s.pollIntervalSec}s`;
+  else ps.innerHTML = `${light} <span class="neg">last poll failed: ${esc(c.error)}</span> · ${ageText}`;
   /** @type {HTMLElement} */ (document.getElementById('calls')).textContent = s.demo ? '' : `${s.callsInLastMinute}/30 API calls/min`;
   const ai = /** @type {HTMLElement} */ (document.getElementById('ai-badge'));
   ai.textContent = s.ai.enabled ? `AI: ${s.ai.model}` : 'AI scoring off';
@@ -157,7 +162,8 @@ document.querySelector('#token-table tbody')?.addEventListener('click', (e) => {
 
 function tabList() {
   return [
-    { id: 'market', label: 'Market' },
+    { id: 'home', label: 'Scoreboard' },
+    { id: 'market', label: 'Coins' },
     ...state.status.signals.map((/** @type {any} */ s) => ({ id: `strategy:${s.id}`, label: s.name, color: colorOf(s.id) })),
     { id: 'strategy:random', label: 'Random', color: colorOf('random') },
     { id: 'results', label: 'Results' },
@@ -356,6 +362,89 @@ function tradesTable(trades, showStrategy) {
   </tr></thead><tbody>${rows}</tbody></table>`;
 }
 
+const VERDICTS = /** @type {Record<string, {text: string, cls: string}>} */ ({
+  too_early: { text: 'Too early', cls: 'v-early' },
+  no_edge: { text: 'No edge', cls: 'v-none' },
+  leaning: { text: 'Leaning', cls: 'v-lean' },
+  clear: { text: 'Clear', cls: 'v-clear' },
+});
+
+/** @param {HTMLElement} view */
+async function homeView(view) {
+  const [res, trades] = await Promise.all([getJson('/api/results'), getJson('/api/trades?limit=400')]);
+  const rules = res.strategies.filter((/** @type {any} */ r) => r.strategy !== 'random');
+  const winPct = (/** @type {any} */ a) => (a.winRate === null ? '–' : `${Math.round(a.winRate * 100)}%`);
+  const rows = rules
+    .map((/** @type {any} */ r) => {
+      const v = VERDICTS[r.verdict.label];
+      const tw = r.twin;
+      return `<tr class="clickable" data-goto="strategy:${esc(r.strategy)}">
+        <td><span class="dot" style="background:${colorOf(r.strategy)}"></span> ${esc(strategyName(r.strategy))}</td>
+        <td><span class="verdict ${v.cls}" title="${esc(r.verdict.detail)}">${v.text}</span></td>
+        <td class="num">${r.all.closed}</td>
+        <td class="num">${r.open + r.pending}</td>
+        <td class="num">${winPct(r.all)}</td>
+        <td class="num ${signClass(r.all.pnlUsd)}">${pnlUsd(r.all.pnlUsd)}</td>
+        <td class="num ${signClass(tw.all.pnlUsd)}">${pnlUsd(tw.all.pnlUsd)}</td>
+        <td class="num">${winPct(tw.all)}</td>
+        <td class="num ${signClass(r.verdict.edgePct)}">${r.verdict.edgePct === null ? '–' : pct(r.verdict.edgePct)}</td>
+        <td class="muted">${esc(r.verdict.detail)}</td>
+      </tr>`;
+    })
+    .join('');
+
+  view.innerHTML = `
+    <div class="head"><span class="sym">Is any rule beating random?</span>
+      <span class="muted">Each rule against its random twin: random coins bought at the same moments, with the same costs and exits.</span></div>
+    <div class="section scroll-x"><table class="grid scoreboard"><thead><tr>
+      <th>Rule</th><th>Verdict</th><th class="num">Closed</th><th class="num">Open</th><th class="num">Win %</th><th class="num">P&amp;L</th>
+      <th class="num">Twin P&amp;L</th><th class="num">Twin win %</th><th class="num" title="Average P&L per trade minus the twin's">Edge / trade</th><th></th>
+    </tr></thead><tbody>${rows}</tbody></table></div>
+    <p class="note"><b>Too early</b>: under 30 closed trades. <b>No edge</b>: not ahead of its twin. <b>Leaning</b>: ahead, but luck could explain it. <b>Clear</b>: ahead by more than luck usually explains (about 2 standard errors). Click a row for its trades.</p>
+    <div class="section"><h3>Balance: each rule vs its twin</h3>
+      <div class="legend">${rules
+        .map((/** @type {any} */ r) => `<span class="key"><span class="line" style="background:${colorOf(r.strategy)}"></span>${esc(strategyName(r.strategy))}</span>`)
+        .join('')}<span class="key"><span class="line dashed"></span>dashed = its random twin</span></div>
+      <div class="chart-wrap"><div class="chart small" id="home-equity"></div></div>
+    </div>
+    <div class="section"><h3>Live feed</h3>${feed(trades)}</div>`;
+  if (!equityChart(/** @type {HTMLElement} */ (document.getElementById('home-equity')), res.strategies, res.startingBankrollUsd)) {
+    destroyCharts();
+    /** @type {HTMLElement} */ (document.getElementById('home-equity')).innerHTML = `<div class="empty" style="padding:16px">No closed trades yet.</div>`;
+  }
+}
+
+/** Recent buys, sells and skips across every strategy, newest first. @param {any[]} trades */
+function feed(trades) {
+  /** @type {{t: number, html: string}[]} */
+  const items = [];
+  for (const t of trades) {
+    const who = `<span class="dot" style="background:${colorOf(t.strategy)}"></span> ${esc(t.strategy === 'random' ? `Random twin of ${strategyName(String(t.book).split(':')[1] ?? '')}` : strategyName(t.strategy))}`;
+    if (t.openedAt) items.push({ t: t.openedAt, html: `<td class="pos">BUY</td><td>${esc(t.symbol)}</td><td>${who}</td><td class="secondary">at ${price(t.entryPrice)}</td>` });
+    if (t.status === 'closed') {
+      items.push({
+        t: t.closedAt,
+        html: `<td class="neg">SELL</td><td>${esc(t.symbol)}</td><td>${who}</td><td class="secondary">${statusLabel(t)} · <span class="${signClass(t.pnlUsd)}">${pnlUsd(t.pnlUsd)} (${pct(t.pnlPct)})</span> after costs</td>`,
+      });
+    }
+    if (t.status === 'cancelled') items.push({ t: t.closedAt, html: `<td class="muted">SKIP</td><td>${esc(t.symbol)}</td><td>${who}</td><td>${statusLabel(t)}</td>` });
+  }
+  items.sort((a, b) => b.t - a.t);
+  if (!items.length) return `<div class="empty">Nothing yet. Trades appear here as rules fire.</div>`;
+  return `<table class="grid"><tbody>${items
+    .slice(0, 25)
+    .map((i) => `<tr><td class="muted">${esc(clock(i.t))}</td>${i.html}</tr>`)
+    .join('')}</tbody></table>`;
+}
+
+document.getElementById('view')?.addEventListener('click', (e) => {
+  const tr = /** @type {HTMLElement} */ (e.target).closest('tr[data-goto]');
+  if (!tr) return;
+  state.tab = String(tr.getAttribute('data-goto'));
+  renderTabs();
+  void renderView();
+});
+
 /** @param {HTMLElement} view */
 async function marketView(view) {
   if (!state.selectedPool && state.tokens.length) state.selectedPool = state.tokens[0].poolAddress;
@@ -540,7 +629,8 @@ async function renderView() {
   const scrollY = document.querySelector('.main')?.scrollTop ?? 0;
   try {
     destroyCharts();
-    if (state.tab === 'market') await marketView(view);
+    if (state.tab === 'home') await homeView(view);
+    else if (state.tab === 'market') await marketView(view);
     else if (state.tab === 'results') await resultsView(view);
     else if (state.tab.startsWith('strategy:')) await strategyView(view, state.tab.slice('strategy:'.length));
   } catch (err) {

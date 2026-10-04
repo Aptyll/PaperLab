@@ -9,7 +9,7 @@ import { normalizeResponse } from '../src/providers/geckoterminal.js';
 import { buildPendingTrade, fillPending, exitReasonFor, closeTrade, breakevenMove, priceImpact } from '../src/engine/paper.js';
 import { loadSignals } from '../src/engine/signal-loader.js';
 import { runCycle } from '../src/engine/cycle.js';
-import { strategyResults, wilson, calibration } from '../src/engine/stats.js';
+import { strategyResults, wilson, calibration, verdict } from '../src/engine/stats.js';
 import { Store } from '../src/db.js';
 import { DEFAULTS } from '../src/config.js';
 
@@ -270,4 +270,13 @@ test('wilson interval and calibration', () => {
   const c = calibration([t, f]);
   assert.equal(c.n, 2);
   assert.ok(c.brier !== null && c.baselineBrier !== null && c.brier < c.baselineBrier);
+});
+
+test('verdict: too early, no edge, leaning, clear', () => {
+  const trades = (/** @type {number[]} */ pcts) => pcts.map((p) => /** @type {any} */ ({ status: 'closed', pnlPct: p, pnlUsd: p * 50 }));
+  const noisy = (/** @type {number} */ center, /** @type {number} */ n) => Array.from({ length: n }, (_, i) => center + (i % 2 ? 0.2 : -0.2));
+  assert.equal(verdict(trades(noisy(0.1, 10)), trades(noisy(0, 10))).label, 'too_early');
+  assert.equal(verdict(trades(noisy(-0.05, 30)), trades(noisy(0, 30))).label, 'no_edge');
+  assert.equal(verdict(trades(noisy(0.05, 30)), trades(noisy(0, 30))).label, 'leaning');
+  assert.equal(verdict(trades(noisy(0.2, 30)), trades(noisy(0, 30))).label, 'clear');
 });

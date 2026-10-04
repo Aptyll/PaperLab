@@ -52,6 +52,55 @@ export function summarize(trades) {
   };
 }
 
+/** Closed trades needed before a verdict means anything. Matches go-live rule 1. */
+export const MIN_TRADES_FOR_VERDICT = 30;
+
+/**
+ * @typedef {'too_early'|'no_edge'|'leaning'|'clear'} VerdictLabel
+ * @typedef {Object} Verdict
+ * @property {VerdictLabel} label
+ * @property {string} detail   Plain-words explanation for the UI.
+ * @property {number|null} edgePct  Rule's average P&L per trade minus its twin's.
+ * @property {number|null} tStat    Welch t statistic of that difference.
+ */
+
+/** @param {number[]} xs */
+function meanVar(xs) {
+  const n = xs.length;
+  const mean = xs.reduce((a, b) => a + b, 0) / n;
+  const variance = n > 1 ? xs.reduce((a, b) => a + (b - mean) ** 2, 0) / (n - 1) : 0;
+  return { n, mean, variance };
+}
+
+/**
+ * Is a rule really beating its random twin, or could it be luck?
+ * Compares average P&L per closed trade with a Welch t test:
+ * under 30 closed trades -> too early; not ahead -> no edge;
+ * ahead by less than about 2 standard errors -> leaning; more -> clear.
+ *
+ * @param {PaperTrade[]} rule  Closed trades of the rule.
+ * @param {PaperTrade[]} twin  Closed trades of its random twin.
+ * @returns {Verdict}
+ */
+export function verdict(rule, twin) {
+  const a = rule.map((t) => t.pnlPct ?? 0);
+  const b = twin.map((t) => t.pnlPct ?? 0);
+  if (a.length < MIN_TRADES_FOR_VERDICT) {
+    return { label: 'too_early', detail: `${a.length} of ${MIN_TRADES_FOR_VERDICT} closed trades needed`, edgePct: null, tStat: null };
+  }
+  if (b.length < 2) {
+    return { label: 'too_early', detail: 'random twin has too few closed trades to compare', edgePct: null, tStat: null };
+  }
+  const x = meanVar(a);
+  const y = meanVar(b);
+  const edge = x.mean - y.mean;
+  const se = Math.sqrt(x.variance / x.n + y.variance / y.n);
+  const t = se > 0 ? edge / se : edge > 0 ? Infinity : 0;
+  if (edge <= 0) return { label: 'no_edge', detail: 'not ahead of its random twin', edgePct: edge, tStat: t };
+  if (t < 2) return { label: 'leaning', detail: 'ahead of random, but luck could explain it', edgePct: edge, tStat: t };
+  return { label: 'clear', detail: 'ahead of random by more than luck usually explains', edgePct: edge, tStat: t };
+}
+
 /**
  * @typedef {Object} BookResult
  * @property {number} open
@@ -66,7 +115,7 @@ export function summarize(trades) {
  */
 
 /**
- * @typedef {BookResult & {strategy: string, twin: BookResult|null}} StrategyResult
+ * @typedef {BookResult & {strategy: string, twin: BookResult|null, verdict: Verdict|null}} StrategyResult
  *   `twin` is the signal's random control book (null for the random row itself).
  *   For the random row, money fields are averages across all twins.
  */
@@ -117,6 +166,7 @@ function bookResult(mine, startingBankroll, latestPrice) {
  * @returns {StrategyResult[]}
  */
 export function strategyResults({ trades, strategies, startingBankroll, latestPrice }) {
+  const closedIn = (/** @type {string} */ book) => trades.filter((t) => t.book === book && t.status === 'closed');
   const rows = strategies.map((strategy) => ({
     strategy,
     ...bookResult(
@@ -129,6 +179,7 @@ export function strategyResults({ trades, strategies, startingBankroll, latestPr
       startingBankroll,
       latestPrice,
     ),
+    verdict: verdict(closedIn(strategy), closedIn(`${RANDOM_STRATEGY}:${strategy}`)),
   }));
   const randomAll = bookResult(
     trades.filter((t) => t.strategy === RANDOM_STRATEGY),
@@ -147,6 +198,7 @@ export function strategyResults({ trades, strategies, startingBankroll, latestPr
     unrealizedPnlUsd: avg((b) => b.unrealizedPnlUsd),
     equityCurve: [],
     twin: null,
+    verdict: null,
   };
   return [...rows, randomRow];
 }

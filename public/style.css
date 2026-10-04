@@ -178,3 +178,15 @@ table.grid tbody tr:hover { background: var(--surface-2); }
 }
 .scroll-x { overflow-x: auto; }
 table.grid td.wrap { white-space: normal; min-width: 160px; }
+.health { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; vertical-align: middle; }
+.health.ok { background: var(--good); }
+.health.bad { background: var(--critical); }
+tr.clickable { cursor: pointer; }
+.scoreboard td { padding-top: 6px; padding-bottom: 6px; font-size: 13px; }
+.verdict { padding: 1px 7px; border-radius: 3px; border: 1px solid var(--border); font-weight: 700; }
+.verdict.v-early { color: var(--text-secondary); }
+.verdict.v-none { color: var(--critical); border-color: var(--critical); }
+.verdict.v-lean { color: var(--warning); border-color: var(--warning); }
+.verdict.v-clear { color: var(--good); border-color: var(--good); }
+/* Keep the tab bar and view at full height inside the scrolling flex column. */
+.tabs, #view { flex-shrink: 0; }
