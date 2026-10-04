@@ -11,7 +11,7 @@
 //   #/guide        How it all works, and past runs
 //   #/notes        The research notebook (files in notes/), newest first
 //
-// A strategy is a code-name (Falcon, Hawk...) plus one rule and its exits.
+// A strategy (a "bot", Bot 1, Bot 2...) is a name plus one rule and its exits.
 // The home screen, its chart and the portfolio number cover active (not
 // retired) strategies.
 
@@ -25,6 +25,8 @@ const state = {
   /** @type {any} */ status: null,
   /** @type {any} Results for the run being shown. */ results: null,
   /** @type {Record<string, string>} */ colors: {},
+  /** Whether the Session list (top right of the strip) is open; kept across redraws. */
+  sessionsOpen: false,
   /** @type {any[]} */ charts: [],
   /** @type {ResizeObserver[]} */ observers: [],
   /** @type {number|null} Past run being viewed; null means the current run. */ viewRun: null,
@@ -122,7 +124,7 @@ const exitsText = (t) => `$${t.sizeUsd} · −${p100(t.stopLossPct)} / +${p100(t
 
 /** @param {string} id @returns {any} */
 const strategyOf = (id) => state.status?.strategies.find((/** @type {any} */ s) => s.id === id) ?? null;
-/** Code-name, e.g. "Falcon". @param {string} id */
+/** Display name, e.g. "Bot 1". @param {string} id */
 const nameOf = (id) => strategyOf(id)?.codeName ?? id;
 /** Plain rule name, e.g. "Buy rush". @param {string} ruleId */
 const ruleName = (ruleId) => state.status?.signals.find((/** @type {any} */ s) => s.id === ruleId)?.name ?? ruleId;
@@ -228,7 +230,6 @@ function renderMenu() {
   const m = /** @type {HTMLElement} */ (document.getElementById('menu'));
   const live = state.status.live;
   m.innerHTML = `<button type="button" role="menuitem" data-live="${live ? 'off' : 'on'}">${live ? 'Turn off live data' : 'Turn on live data'}</button>
-    <button type="button" role="menuitem" data-reset>Start over at ${dollars(state.status.startingBankrollUsd ?? 1000)}…</button>
     <button type="button" role="menuitem" data-quit>Quit Paper Lab</button>`;
 }
 
@@ -237,7 +238,7 @@ function portfolioTick(rows) {
   if (!rows.length) return '';
   const avg = rows.reduce((a, r) => a + r.equityUsd, 0) / rows.length;
   const tip = [
-    `Average balance of the ${rows.length} active strateg${rows.length === 1 ? 'y' : 'ies'}, including open trades${state.viewRun === null ? '' : ' (past run)'}:`,
+    `Average balance of the ${rows.length} active strateg${rows.length === 1 ? 'y' : 'ies'}, including open trades${state.viewRun === null ? '' : ' (past session)'}:`,
     ...rows.map((r) => `${nameOf(r.strategy)}  ${dollars(r.equityUsd)}`),
   ].join('\n');
   return `<div class="tick total" title="${esc(tip)}"><span class="tick-name">Portfolio</span><span class="tick-v">${dollars(avg)}</span></div>`;
@@ -248,9 +249,13 @@ function portfolioTick(rows) {
 const dayTime = (/** @type {number|null} */ ms) =>
   ms ? new Date(ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '–';
 
-/** Runs numbered in the order they started. @returns {any[]} */
+/**
+ * Sessions (runs) numbered in the order they started, without the deleted ones.
+ * Deleted sessions still hold their number, so the others never get renumbered.
+ * @returns {any[]}
+ */
 function runsInOrder() {
-  return (state.status?.runs ?? []).map((/** @type {any} */ r, /** @type {number} */ i) => ({ ...r, n: i + 1 }));
+  return (state.status?.runs ?? []).map((/** @type {any} */ r, /** @type {number} */ i) => ({ ...r, n: i + 1 })).filter((/** @type {any} */ r) => !r.deletedAt);
 }
 
 /** The run a page is showing. */
@@ -300,7 +305,7 @@ function pastRunBanner() {
   const diff = runDifferences(run);
   const span = `${dayTime(run.startedAt)} to ${dayTime(run.lastActivityAt)}`;
   return `<div class="past-run">
-    <div><b>Run ${run.n}, a past run</b> <span class="muted">· ${esc(span)}</span>
+    <div><b>Session ${run.n}, a past session</b> <span class="muted">· ${esc(span)}</span>
       <div class="secondary">${diff.length ? `Different from now: ${esc(diff.join(' · '))}.` : 'Same rules as now.'}${run.note && run.settings.engine === runsInOrder().find((r) => r.id === state.status.runId)?.settings.engine ? ` <span class="muted">${esc(run.note)}</span>` : ''}</div></div>
     <button type="button" data-run="current">Back to now</button>
   </div>`;
@@ -319,7 +324,7 @@ function dataNote(excluded) {
   return noteFor(bad, () => 'bought or sold on a price reading that looked wrong', 'bad-prices') + noteFor(off, (one) => `open while Paper Lab was off, so nothing checked ${one ? 'its' : 'their'} stop or target`, 'time-off');
 }
 
-/** One line under the strip for one reason trades were left out. @param {any[]} list @param {(one: boolean) => string} why @param {string} anchor */
+/** One line in "Left out of results" for one reason trades were left out. @param {any[]} list @param {(one: boolean) => string} why @param {string} anchor */
 function noteFor(list, why, anchor) {
   if (!list.length) return '';
   const coins = [...new Set(list.map((t) => t.symbol))];
@@ -330,12 +335,35 @@ function noteFor(list, why, anchor) {
   return `<div class="data-note" title="${esc(detail)}"><span class="flag-dot"></span>${list.length} trade${one ? '' : 's'} on ${where} left out: ${one ? 'it was' : 'they were'} ${why(one)}${sum ? ` (${money(sum)} not counted)` : ''}. <a href="#/guide/${anchor}">Why</a></div>`;
 }
 
-/** Which run the scoreboard shows, and where the earlier ones are. Quiet, at the end of the strip. */
-function runMark() {
+/**
+ * Top right of the strip: the session being shown, styled like Portfolio.
+ * Click it to switch sessions, start a new one, or delete an old one.
+ */
+function sessionBox() {
   const runs = runsInOrder();
-  const run = runs.find((r) => r.id === state.status.runId);
-  if (state.viewRun !== null || runs.length < 2 || !run) return '';
-  return `<a class="run-mark" href="#/guide/past-runs" title="Changing a trading setting starts a new run with fresh balances. Earlier runs keep all their trades.">Run ${run.n} · since ${esc(clock(run.startedAt))} · Past runs</a>`;
+  const shown = shownRun();
+  if (!shown) return '';
+  const rows = [...runs]
+    .reverse()
+    .map((r) => {
+      const now = r.id === state.status.runId;
+      const viewing = r.id === shown.id;
+      return `<div class="session-row${viewing ? ' on' : ''}" data-open-run="${r.id}" role="menuitem">
+        <span class="session-n">Session ${r.n}${now ? ' <span class="muted">· now</span>' : ''}</span>
+        <span class="muted">${esc(dayTime(r.startedAt))}${now ? '' : ` to ${esc(dayTime(r.lastActivityAt))}`} · ${r.trades} trade${r.trades === 1 ? '' : 's'}</span>
+        ${now ? '' : `<button type="button" class="session-del" data-delete-session="${r.id}" title="Delete Session ${r.n} and its trades">Delete</button>`}
+      </div>`;
+    })
+    .join('');
+  return `<div class="session-box">
+    <button type="button" class="tick total session-tick" data-sessions aria-haspopup="menu" aria-expanded="${state.sessionsOpen}" title="Sessions: each starts every bot at ${esc(dollars(state.status.startingBankrollUsd ?? 1000))} with its own trades. Click to switch, start a new one, or delete an old one.">
+      <span class="tick-name">Session</span><span class="tick-v">Session ${shown.n}</span>
+    </button>
+    <div class="session-menu" role="menu" ${state.sessionsOpen ? '' : 'hidden'}>
+      ${rows}
+      <button type="button" class="session-new" data-new-session>New session: every bot starts at ${esc(dollars(state.status.startingBankrollUsd ?? 1000))}</button>
+    </div>
+  </div>`;
 }
 
 /** Exits a strategy used in the run being shown. @param {string} id */
@@ -347,6 +375,7 @@ function shownExits(id) {
 
 /** Switch to a run (null = now) and show its scoreboard. @param {number|null} id */
 function openRun(id) {
+  state.sessionsOpen = false;
   state.viewRun = id === state.status.runId ? null : id;
   state.results = null;
   if (route().page === 'home') void refresh();
@@ -701,8 +730,8 @@ function rangePick() {
 function balanceChart(el, lines, start, span = {}) {
   const moved = (/** @type {number|undefined} */ v) => v !== undefined && Math.abs(v - start) >= 0.005;
   if (!lines.some((l) => l.trades?.length || moved(l.now) || l.curve.some((p) => moved(p.equity)))) {
-    const earlier = state.viewRun === null && runsInOrder().length > 1 ? ' Earlier results are under <a href="#/guide/past-runs">Past runs</a>.' : '';
-    el.innerHTML = `<div class="empty chart-empty">No trades yet in this run.${earlier}</div>`;
+    const earlier = state.viewRun === null && runsInOrder().length > 1 ? ' Earlier sessions are under Session, top right.' : '';
+    el.innerHTML = `<div class="empty chart-empty">No trades yet in this session.${earlier}</div>`;
     return;
   }
   const times = lines.flatMap((l) => l.curve.map((p) => p.t));
@@ -967,7 +996,7 @@ function cardTip(r) {
   ].join('\n');
 }
 
-/** One strategy in the strip: code-name and profit, green when up and red when down. Details on hover. @param {any} r */
+/** One strategy in the strip: name and profit, green when up and red when down. Details on hover. @param {any} r */
 function strategyTick(r) {
   return `<a class="tick" href="#/rule/${esc(r.strategy)}" style="--c:${pnlOf(r) >= 0 ? css('--good') : css('--critical')}" title="${esc(cardTip(r))}">
     <span class="tick-name">${esc(nameOf(r.strategy))}</span><span class="tick-v">${signedDollars(pnlOf(r))}</span>
@@ -1049,8 +1078,7 @@ async function scoreboardPage(view) {
   view.innerHTML = `<div class="page wide">
     <div class="first-screen">
       ${pastRunBanner()}
-      ${rows.length ? `<div class="ticks">${portfolioTick(rows)}${rows.map(strategyTick).join('')}${runMark()}</div>` : '<div class="empty">No active strategies.</div>'}
-      ${dataNote(res.excluded)}
+      ${rows.length ? `<div class="ticks">${portfolioTick(rows)}${rows.map(strategyTick).join('')}${sessionBox()}</div>` : '<div class="empty">No active strategies.</div>'}
       <div class="chart-row">
         <div class="chart-box fill">
           <div class="chart" id="balance"></div>
@@ -1061,6 +1089,7 @@ async function scoreboardPage(view) {
       </div>
     </div>
     ${panel('trades', `Trades <span class="count">${openCount ? `${openCount} open` : ''}</span>`, tradesList(mine), false)}
+    ${res.excluded?.length ? panel('left-out', `Left out of results <span class="count">${res.excluded.length}</span>`, `<div class="left-out">${dataNote(res.excluded)}</div>`) : ''}
     ${calibrationBlock(res.calibration)}
   </div>`;
 
@@ -1252,7 +1281,7 @@ async function rulePage(view, id) {
   const res = state.results;
   const r = res.strategies.find((/** @type {any} */ x) => x.strategy === id);
   if (!r) {
-    view.innerHTML = `<div class="page">${pastRunBanner()}<a class="back" href="#/">← Scoreboard</a><div class="empty">This strategy has no trades in this run.</div></div>`;
+    view.innerHTML = `<div class="page">${pastRunBanner()}<a class="back" href="#/">← Scoreboard</a><div class="empty">This bot has no trades in this session.</div></div>`;
     return;
   }
   const s = strategyOf(id);
@@ -1392,7 +1421,7 @@ async function coinsPage(view) {
     })
     .join('');
   view.innerHTML = `<div class="page">
-    <div class="page-head"><h1>Our coins</h1><span class="muted">bought by the strategies this run, best first</span></div>
+    <div class="page-head"><h1>Our coins</h1><span class="muted">bought by the bots this session, best first</span></div>
     ${coinTable(coins, state.allCoins ? Infinity : 15)}
     <div class="page-head trending-head"><h1>Trending coins</h1></div>
     ${tokens.length ? `<div class="scroll-x"><table class="t"><thead><tr>
@@ -1481,7 +1510,7 @@ function guidePage(view) {
   const strategies = st.strategies
     .map(
       (/** @type {any} */ s) => `<tr class="link" data-href="#/rule/${esc(s.id)}">
-        <td><span class="rule-name">${dot(s.id)}<b>${esc(s.codeName)}</b></span></td>
+        <td><span class="rule-name">${dot(s.id)}<b>${esc(s.codeName)}</b>${s.formerly ? ` <span class="muted">${esc(s.formerly)}</span>` : ''}</span></td>
         <td>${esc(ruleName(s.rule))}${s.skipCopycats ? '<span class="muted">, skips copycats</span>' : ''}</td>
         <td class="mono">${esc(exitsText(s.trade))}</td>
         <td class="muted">${s.retired ? 'retired' : ''}</td>
@@ -1493,7 +1522,7 @@ function guidePage(view) {
       const now = r.id === st.runId;
       const viewing = r.id === (state.viewRun ?? st.runId);
       return `<tr class="link" data-open-run="${r.id}">
-        <td><b>Run ${r.n}</b>${now ? ' <span class="muted">· now</span>' : ''}${viewing && !now ? ' <span class="muted">· viewing</span>' : ''}</td>
+        <td><b>Session ${r.n}</b>${now ? ' <span class="muted">· now</span>' : ''}${viewing && !now ? ' <span class="muted">· viewing</span>' : ''}</td>
         <td class="muted">${esc(dayTime(r.startedAt))} to ${esc(dayTime(r.lastActivityAt))}</td>
         <td class="num">${r.trades} trade${r.trades === 1 ? '' : 's'}</td>
       </tr>`;
@@ -1501,33 +1530,33 @@ function guidePage(view) {
     .join('');
 
   view.innerHTML = `<div class="page guide">
-    <div class="page-head guide-head"><h1>Guide</h1><button type="button" class="btn-link" data-scroll="past-runs">Past runs (${runs.length}) ↓</button></div>
+    <div class="page-head guide-head"><h1>Guide</h1><button type="button" class="btn-link" data-scroll="sessions">Sessions (${runs.length}) ↓</button></div>
     <p><b>What this is.</b> A practice trading lab. It watches trending Solana memecoins and makes pretend trades. No wallet, no real money, no real orders.</p>
     <p><b>The question it answers.</b> Can a simple rule pick coins better than picking at random? Each strategy gets its own pretend ${bank}. Every time a strategy buys a coin, its own random picker buys a random coin at the same moment, with the same money and the same selling rules. If the strategy can't beat that, it's luck, not skill.</p>
     <p><b>How every trade works.</b> Spend $${t.sizeUsd}. Sell when the price is down ${p100(t.stopLossPct)}, up ${p100(t.takeProfitPct)}, or after ${t.timeLimitMin} minutes, whichever comes first. Some strategies use other numbers: faster ones trade tighter, bigger ones spend more and hold longer (listed below). Only coins with at least ${floor} of trading money behind them ("liquidity") are allowed. Each trade pays realistic costs: about ${cost} going in and again going out, more for smaller coins, and it buys at the next price check rather than instantly. If a coin's liquidity collapses, the trade counts as almost a total loss.</p>
     <p><b>The rules.</b></p>
     <ul>${st.signals.map((/** @type {any} */ s) => `<li><b>${esc(s.name)}:</b> ${esc(ruleText(s))}</li>`).join('')}</ul>
-    <p><b>Strategies.</b> A strategy is a code-name, one rule, and its own selling numbers. Settings never change under a code-name; trying new numbers means a new code-name, and a retired one stops buying but keeps its history.</p>
-    <table class="t compact guide-table"><thead><tr><th>Code-name</th><th>Rule</th><th>Trade · stop / target / time</th><th></th></tr></thead><tbody>${strategies}</tbody></table>
+    <p><b>Bots.</b> Each bot is one rule plus its own selling numbers. A bot's settings never change; trying new numbers means a new bot with the next number, and a retired one stops buying but keeps its history. Bots used to have code-names, shown in grey below.</p>
+    <table class="t compact guide-table"><thead><tr><th>Bot</th><th>Rule</th><th>Trade · stop / target / time</th><th></th></tr></thead><tbody>${strategies}</tbody></table>
     <p><b>The strip above the chart.</b> First your portfolio, then each strategy, most profit first, green when up and red when down. A strategy's number is its profit so far, open trades counted as if sold now. Hover one for its rule, balance, how far it is ahead of its random picker, win rate and go-live checks. The menu bar hides at the top of the screen; move the mouse to the small handle at the top edge to bring it back.</p>
     <p><b>The five go-live checks.</b> Total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run. There is no minimum number of trades: you decide when there are enough.</p>
     <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
-    <p><b>The chart.</b> One white line per strategy shown, with its name at the right end. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. A new trade starts a few dollars down: selling it right away would cost the fee and slippage both ways, about ${p100(2 * (t.feeRate + t.slippageRate))} of the trade. When two strategies hold the same coins (a fast and a slow version of one rule), their lines match until their exits differ; the one on top is drawn in long dashes so the other shows through. Only the current run is drawn; the run marker at the end of the strip links to past runs.</p>
-    <p><b>Time views.</b> The buttons in the chart's top corner show the last 15 minutes, hour or 4 hours, or the whole run. Paper Lab only collects prices while it's running, so time it was off (your computer asleep, the app closed) is skipped rather than drawn as a flat line: a faint dashed line marks the spot with how long it was off, like "off 6.2h". If it's off right now, the end of the chart says for how long.</p>
-    <p id="time-off"><b>Trades open while it was off.</b> While Paper Lab is off, nobody watches open trades: a stop loss or target that should have fired doesn't, and the trade sells at whatever the price is when Paper Lab comes back, hours later. Real trading wouldn't work like that, so any trade that was waiting to buy or holding through an off period (5 minutes or more without a price check) is crossed out and left out of the results and the chart, with a note under the strip. Random pickers' trades follow the same rule. Nothing is deleted.</p>
+    <p><b>The chart.</b> One white line per strategy shown, with its name at the right end. The grey dashed line is the average of their random pickers. Each line is the balance over time with open trades counted as if sold at that moment's price, so it moves as prices move and ends at the strip's number. A new trade starts a few dollars down: selling it right away would cost the fee and slippage both ways, about ${p100(2 * (t.feeRate + t.slippageRate))} of the trade. When two strategies hold the same coins (a fast and a slow version of one rule), their lines match until their exits differ; the one on top is drawn in long dashes so the other shows through. Only the session being shown is drawn; Session, at the right end of the strip, switches between sessions.</p>
+    <p><b>Time views.</b> The buttons in the chart's top corner show the last 15 minutes, hour or 4 hours, or the whole session. Paper Lab only collects prices while it's running, so time it was off (your computer asleep, the app closed) is skipped rather than drawn as a flat line: a faint dashed line marks the spot with how long it was off, like "off 6.2h". If it's off right now, the end of the chart says for how long.</p>
+    <p id="time-off"><b>Trades open while it was off.</b> While Paper Lab is off, nobody watches open trades: a stop loss or target that should have fired doesn't, and the trade sells at whatever the price is when Paper Lab comes back, hours later. Real trading wouldn't work like that, so any trade that was waiting to buy or holding through an off period (5 minutes or more without a price check) is crossed out and left out of the results and the chart, listed under "Left out of results" below Trades on the scoreboard. Random pickers' trades follow the same rule. Nothing is deleted.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale. The square icon beside the dot switches full screen on and off (Esc also leaves it).</p>
     <p><b>Buys and sells.</b> The chart marks every buy with a ringed B, at the moment it happened, and every sell with a filled S, green when the trade made money and red when it lost, each with the coin's ticker beside it (when tickers would overlap, some are left out). Hover anywhere on the chart to see the balances and the trades, with tickers, at that moment; move the mouse off the chart and the panel goes away.</p>
     <p><b>Hot now.</b> Top right: coins a strategy's rule fired on in the last 15 minutes, the ones the strategies are buying right now. Coins where more different rules agree come first (a fast and a slow version of one rule count once), then the best odds. The odds are measured, not guessed: how often that strategy's past paper trades reached its take profit before its stop loss or time limit, out of how many trades, next to its random picker's rate for comparison. Under 10 trades it says so instead of showing a rate. The percent on the right is how far the price has moved since the first signal, so you can see if you'd be late. Hover a coin for every strategy's numbers. It's there to point you at coins worth a look; you decide.</p>
-    <p id="rug-signs"><b>Warning tags.</b> Under a Hot now coin, in amber: <i>copycat</i> means another token with the same ticker was trading first (copies of a trending coin are a common rug pull, where the creator pulls the pool's money and the price goes to zero); <i>new pool</i> means the pool is under 2 hours old; <i>ticker rugged</i> means another pool with that ticker collapsed in the last 6 hours. They hide nothing and change no trades. Kestrel tests whether skipping copycats pays: it is Falcon with the same rule and exits, except it doesn't buy copycats, so compare the two. Two rug pulls is far too few to know yet.</p>
-    <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
+    <p id="rug-signs"><b>Warning tags.</b> Under a Hot now coin, in amber: <i>copycat</i> means another token with the same ticker was trading first (copies of a trending coin are a common rug pull, where the creator pulls the pool's money and the price goes to zero); <i>new pool</i> means the pool is under 2 hours old; <i>ticker rugged</i> means another pool with that ticker collapsed in the last 6 hours. They hide nothing and change no trades. Bot 10 tests whether skipping copycats pays: it is Bot 1 with the same rule and exits, except it doesn't buy copycats, so compare the two. Two rug pulls is far too few to know yet.</p>
+    <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the bots bought this session, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
     <p id="turnover"><b>Turnover.</b> The last hour's trading volume as a share of the coin's market cap: 50% means half the coin's value changed hands in an hour. On the Coins page and each coin's page. Three labels follow a reading of how turnover and price move together. <b>Attention</b>: turnover at least ${share(st.turnover.high)}, trading at or above its usual pace, and price up ${share(st.turnover.flatPrice)} or more in the hour, meaning new buyers are absorbing sellers. <b>Distribution</b>: turnover at least ${share(st.turnover.high)} but price flat or down, meaning early holders may be selling into the hype. <b>Fading</b>: the last hour traded under ${st.turnover.falling}x the coin's usual hourly pace (its average over the last 6 hours) while the price holds, meaning attention is leaving. These cut-offs are first guesses. The Turnover check under the Coins page tests them: for every saved reading it looks at the price ${st.turnover.afterMin} minutes later, counting a coin at most once per label every ${st.turnover.spacingMin} minutes, and compares each label with all readings. Until a label clearly differs from "Any reading" over many coins, treat it as an idea, not as odds. No strategy trades on it.</p>
-    <p id="bad-prices"><b>Bad prices.</b> Now and then the price source returns a reading that can't be right, like a coin jumping 4x in a minute while its pool's liquidity doesn't move. Every reading is checked: when the price moves 2x or more, the pool's liquidity and the coin's FDV have to move with it, the way they do when people really trade. A reading that fails is kept but held back: nothing buys, sells or values a trade on it, and the coin's price chart leaves it out. Trades made on such a reading before this check existed are crossed out and left out of the results, with a note under the strip. Nothing is deleted.</p>
-    <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not. To start over by hand, click the dot in the menu bar and pick "Start over at ${bank}": every strategy starts a new run at an even balance, and the old run stays under Past runs. Nothing is deleted.</p>
-    <h2 id="past-runs">Past runs</h2>
-    <p class="muted">Click a run to see its scoreboard as it ended. "Back to now" returns to the current run.</p>
+    <p id="bad-prices"><b>Bad prices.</b> Now and then the price source returns a reading that can't be right, like a coin jumping 4x in a minute while its pool's liquidity doesn't move. Every reading is checked: when the price moves 2x or more, the pool's liquidity and the coin's FDV have to move with it, the way they do when people really trade. A reading that fails is kept but held back: nothing buys, sells or values a trade on it, and the coin's price chart leaves it out. Trades made on such a reading before this check existed are crossed out and left out of the results, listed under "Left out of results" below Trades on the scoreboard. Nothing is deleted.</p>
+    <p><b>Sessions.</b> A session starts every bot at ${bank} with no trades carried over, so sessions never mix. Click Session at the top right of the scoreboard to switch between them, start a new one, or delete an old one. Deleting asks first and saves a full backup copy of the database next to it, so a mistake can be undone by hand. The session trading now can't be deleted; start a new one first. Hot now's odds come from the current session only. Changing a shared trading setting (costs, the coin filter) also starts a new session; adding or retiring a bot does not.</p>
+    <h2 id="sessions">Sessions</h2>
+    <p class="muted">Click a session to see its scoreboard as it ended. "Back to now" returns to the current one.</p>
     ${runs.length ? `<table class="t compact runs-table"><tbody>${runRows}</tbody></table>` : '<div class="empty">None yet.</div>'}
     <p class="muted credits">Data: <a href="https://www.geckoterminal.com" target="_blank" rel="noopener">GeckoTerminal</a>. Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a>.</p>
   </div>`;
@@ -1642,7 +1671,8 @@ async function render() {
   const r = route();
   const key = `${r.page}/${r.arg}`;
   const keepScroll = key === lastRoute ? view.scrollTop : 0;
-  const openDetails = [...view.querySelectorAll('details')].map((d) => d.open);
+  // Which panels were open, by name: a panel that wasn't there before keeps its own default.
+  const openDetails = new Map([...view.querySelectorAll('details')].map((d, i) => [d.getAttribute('data-panel') ?? `#${i}`, d.open]));
   try {
     destroyCharts();
     if (!state.results && (r.page === 'home' || r.page === 'rule')) await loadResults();
@@ -1652,12 +1682,17 @@ async function render() {
     else if (r.page === 'guide') guidePage(view);
     else if (r.page === 'notes') await notesPage(view);
     else await scoreboardPage(view);
-    if (key === lastRoute) view.querySelectorAll('details').forEach((d, i) => (d.open = openDetails[i] ?? false));
+    if (key === lastRoute) {
+      view.querySelectorAll('details').forEach((d, i) => {
+        const was = openDetails.get(d.getAttribute('data-panel') ?? `#${i}`);
+        if (was !== undefined) d.open = was;
+      });
+    }
   } catch (err) {
     view.innerHTML = `<div class="page empty neg">Couldn't load this page: ${esc(err instanceof Error ? err.message : err)}</div>`;
   } finally {
     view.scrollTop = keepScroll;
-    // A link like #/guide/past-runs lands on that section.
+    // A link like #/guide/sessions lands on that section.
     if ((r.page === 'guide' || r.page === 'notes') && r.arg && key !== lastRoute) document.getElementById(r.arg)?.scrollIntoView();
     lastRoute = key;
     rendering = false;
@@ -1709,6 +1744,10 @@ view.addEventListener(
 view.addEventListener('click', (e) => {
   const target = /** @type {HTMLElement} */ (e.target);
   if (target.closest('[data-run="current"]')) return openRun(null);
+  const del = target.closest('[data-delete-session]');
+  if (del) return void deleteSession(Number(del.getAttribute('data-delete-session')));
+  if (target.closest('[data-new-session]')) return void newSession();
+  if (target.closest('[data-sessions]')) return showSessions(!state.sessionsOpen);
   const runRow = target.closest('[data-open-run]');
   if (runRow) return openRun(Number(runRow.getAttribute('data-open-run')));
   const range = target.closest('[data-range]');
@@ -1738,21 +1777,54 @@ window.addEventListener('hashchange', () => {
 /** @param {string} url */
 const post = (url) => fetch(url, { method: 'POST', headers: { 'x-paper-lab': '1' } });
 
-/** Every strategy back to its bankroll in a new run; the current run stays under Past runs. */
-async function startOver() {
-  closeMenu();
+/** Open or close the Session list without redrawing the page. @param {boolean} open */
+function showSessions(open) {
+  state.sessionsOpen = open;
+  document.querySelector('.session-menu')?.toggleAttribute('hidden', !open);
+  document.querySelector('[data-sessions]')?.setAttribute('aria-expanded', String(open));
+}
+
+/** A new session: every bot back to its bankroll, no trades carried over. The current session is kept. */
+async function newSession() {
+  showSessions(false);
   const run = runsInOrder().find((r) => r.id === state.status.runId);
   const bank = dollars(state.status.startingBankrollUsd ?? 1000);
   const ok = confirm(
-    `Start every strategy over at ${bank}?\n\n` +
-      `Run ${run?.n ?? ''} and all its trades are kept under Past runs on the Guide. ` +
-      'Trades still open in it finish on their own but don\'t count in the new run.',
+    `Start a new session? Every bot starts over at ${bank}, with no trades carried over.\n\n` +
+      `Session ${run?.n ?? ''} and all its trades are kept: switch back to it from Session, top right. ` +
+      "Trades still open in it finish on their own but don't count in the new session.",
   );
   if (!ok) return;
   await post('/api/reset').catch(() => {});
   state.viewRun = null;
   state.results = null;
   location.hash = '#/';
+  await refresh();
+}
+
+/** Delete a past session and its trades, after asking. A backup copy of the database is saved first. @param {number} id */
+async function deleteSession(id) {
+  const run = runsInOrder().find((r) => r.id === id);
+  if (!run) return;
+  const ok = confirm(
+    `Delete Session ${run.n} and its ${run.trades} trade${run.trades === 1 ? '' : 's'}?\n\n` +
+      'It disappears from Paper Lab for good. A full backup copy of the database is saved next to it first, just in case. ' +
+      'Price history is shared by every session and stays.',
+  );
+  if (!ok) return;
+  // Saving the backup copy can take a few seconds on a big database.
+  const btn = /** @type {HTMLButtonElement|null} */ (document.querySelector(`[data-delete-session="${id}"]`));
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Deleting…';
+  }
+  const res = await post(`/api/sessions/delete?id=${id}`).catch(() => null);
+  if (!res?.ok) {
+    alert(`Session ${run.n} was not deleted${res ? ` (${(await res.json().catch(() => ({}))).error ?? res.status})` : ''}.`);
+    return;
+  }
+  if (state.viewRun === id) state.viewRun = null;
+  state.results = null;
   await refresh();
 }
 
@@ -1777,15 +1849,18 @@ document.getElementById('health')?.addEventListener('click', (e) => {
 });
 document.addEventListener('click', (e) => {
   if (!menu.hidden && !menu.contains(/** @type {Node} */ (e.target))) closeMenu();
+  if (state.sessionsOpen && !(/** @type {HTMLElement} */ (e.target).closest('.session-box'))) showSessions(false);
 });
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') closeMenu();
+  if (e.key === 'Escape') {
+    closeMenu();
+    showSessions(false);
+  }
 });
 menu.addEventListener('click', (e) => {
   const b = /** @type {HTMLElement} */ (e.target).closest('button');
   if (!b) return;
   if (b.hasAttribute('data-quit')) return void quit();
-  if (b.hasAttribute('data-reset')) return void startOver();
   void setLive(/** @type {HTMLButtonElement} */ (b));
 });
 

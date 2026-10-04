@@ -72,6 +72,7 @@
  * @typedef {Object} StrategyDef
  * @property {string} id          Stable slug; trades are stored under it. Never reuse one.
  * @property {string} codeName    Shown on screen.
+ * @property {string} [formerly]  The code-name it had before bots were numbered, shown on the Guide.
  * @property {string} signal      Id of the rule it uses (a file in src/signals/).
  * @property {Record<string, number>} [params]  Rule settings that differ from the rule's defaults.
  * @property {Partial<Pick<TradeRules, 'sizeUsd'|'stopLossPct'|'takeProfitPct'|'timeLimitMin'>>} [exits]
@@ -89,6 +90,7 @@
  * @property {TradeRules} trade
  * @property {boolean} retired
  * @property {boolean} [skipCopycats]
+ * @property {string} [formerly]
  */
 
 /**

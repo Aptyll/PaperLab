@@ -386,8 +386,21 @@ table.t.trades { max-width: 760px; }
 
 /* ---- strategy strip: portfolio first, then each strategy, most profit first ---- */
 .ticks { display: flex; flex-wrap: wrap; align-items: stretch; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
-.run-mark { margin-left: auto; align-self: flex-end; padding: 0 2px 8px 18px; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
-.run-mark:hover { color: var(--text-secondary); }
+.session-box { position: relative; margin-left: auto; display: flex; }
+.session-tick { background: none; border: none; border-left: 1px solid var(--border); font: inherit; text-align: left; cursor: pointer; }
+.tick.total.session-tick { padding-right: 2px; }
+.session-tick:hover .tick-v, .session-tick[aria-expanded='true'] .tick-v { color: var(--accent); }
+.session-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; min-width: 320px; background: var(--surface-1); border: 1px solid var(--border); border-radius: 6px; padding: 4px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+.session-row { display: grid; grid-template-columns: 1fr auto; gap: 1px 10px; padding: 7px 10px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+.session-row:hover { background: var(--surface-2); }
+.session-row.on { background: var(--surface-2); }
+.session-n { font-weight: 600; color: var(--text-primary); }
+.session-row > .muted { grid-column: 1; }
+.session-del { grid-column: 2; grid-row: 1 / span 2; align-self: center; background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--text-muted); font: 11px var(--sans); padding: 2px 8px; cursor: pointer; }
+.session-del:hover { color: var(--critical); border-color: var(--critical); }
+.session-new { display: block; width: 100%; margin-top: 4px; padding: 8px 10px; background: none; border: none; border-top: 1px solid var(--border); color: var(--accent); font: 600 12px var(--sans); text-align: left; cursor: pointer; }
+.session-new:hover { background: var(--surface-2); }
+.left-out .data-note { margin: 0 0 6px; }
 .tick { display: flex; flex-direction: column; gap: 1px; padding: 4px 18px 8px; color: inherit; border-left: 1px solid var(--border); min-width: 0; }
 .tick:first-child { border-left: none; padding-left: 2px; }
 a.tick:hover { text-decoration: none; background: color-mix(in srgb, var(--c) 10%, transparent); }

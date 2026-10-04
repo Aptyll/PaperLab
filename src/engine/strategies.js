@@ -37,6 +37,7 @@ export function resolveStrategies(defs, signals, defaults) {
       trade: { ...defaults, ...(d.exits ?? {}) },
       retired: d.retired ?? false,
       skipCopycats: d.skipCopycats ?? false,
+      formerly: d.formerly,
     });
   }
   for (const s of signals) {
