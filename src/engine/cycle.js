@@ -1,6 +1,7 @@
 // @ts-check
 import { buildPendingTrade, fillPending, closeTrade, exitReasonFor } from './paper.js';
 import { RANDOM_STRATEGY } from './signal-loader.js';
+import { suspectPrice } from './sanity.js';
 
 /** @typedef {import('../types.js').Snapshot} Snapshot */
 /** @typedef {import('../types.js').PaperTrade} PaperTrade */
@@ -101,8 +102,22 @@ export async function runCycle(deps) {
   /** @type {Snapshot[]} */
   const stored = store.tx(() => fetched.map((s) => store.insertSnapshot(s)));
   result.snapshots = stored.length;
+  // Price sanity (sanity.js): a reading that jumped without the pool's liquidity
+  // and FDV moving with it is kept but flagged, and nothing acts on it.
+  /** @type {Map<number, string>} */
+  const flags = new Map();
+  for (const s of stored) {
+    const why = suspectPrice(s, store.latestSnapshot(s.poolAddress, s.id));
+    if (why && s.id !== undefined) {
+      flags.set(s.id, why);
+      log(`held back a ${s.symbol} price reading: ${why}`);
+    }
+  }
+  if (flags.size) store.flagSnapshots(flags, ts);
+  const trusted = stored.filter((s) => s.id === undefined || !flags.has(s.id));
+  const heldBack = new Set(stored.filter((s) => s.id !== undefined && flags.has(s.id)).map((s) => s.poolAddress));
   /** @type {Map<string, Snapshot>} */
-  const fresh = new Map(stored.map((s) => [s.poolAddress, s]));
+  const fresh = new Map(trusted.map((s) => [s.poolAddress, s]));
 
   // 2. Fill trades queued last poll, at this poll's price (like a trade placed by
   // hand a minute after the signal). Signal trades go first so a random twin can
@@ -117,6 +132,9 @@ export async function runCycle(deps) {
     let next;
     if (t.matchedTradeId !== null && cancelledIds.has(t.matchedTradeId)) {
       next = { ...t, status: 'cancelled', cancelReason: 'twin_cancelled', closedAt: ts };
+    } else if (heldBack.has(t.poolAddress) && ts - t.signalAt <= config.trade.staleAfterMin * 60_000) {
+      // This poll's price for the coin was held back: wait for a reading we trust.
+      continue;
     } else if (ts - t.signalAt > config.trade.staleAfterMin * 60_000) {
       // Live data was off (or the app stopped) since the signal: too late to act on it.
       next = { ...t, status: 'cancelled', cancelReason: 'no_data', closedAt: ts };
@@ -146,7 +164,7 @@ export async function runCycle(deps) {
 
   // 4. Signals over the tradable universe (same filter for signals and random).
   // Requiring recent sells guards against coins that can be bought but not sold.
-  const universe = stored.filter(
+  const universe = trusted.filter(
     (s) =>
       s.trendingRank !== null &&
       (s.liquidityUsd ?? 0) >= config.universe.minLiquidityUsd &&

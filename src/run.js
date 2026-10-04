@@ -12,6 +12,7 @@ import { runSettings } from './engine/runs.js';
 import { resolveStrategies } from './engine/strategies.js';
 import strategyDefs from './strategies.js';
 import { createServer } from './server.js';
+import { checkSavedPrices } from './engine/sanity.js';
 
 const config = loadConfig();
 if (!['127.0.0.1', 'localhost', '::1'].includes(config.host)) {
@@ -33,6 +34,9 @@ if (store.backupPath) console.log(`Upgraded the database to the new format. A fu
 for (const i of store.imported) {
   console.log(i.error ? `Could not merge ${i.file}: ${i.error}` : `Merged earlier results from ${i.file} as a past run.`);
 }
+// Readings saved before the price sanity check existed get checked once too.
+const held = checkSavedPrices(store, Date.now());
+if (held) console.log(`Price check: ${held} saved price reading${held === 1 ? '' : 's'} held back as unreliable; trades made on them are left out of results.`);
 // Same rules as last time: keep adding to that run. Different rules: start a new one.
 const runId = store.beginRun(runSettings(config, strategies), Date.now());
 if (store.rejoined) console.log(`Joined a paper run that an earlier update had split in two. Copy saved first: ${store.backupPath}`);

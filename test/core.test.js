@@ -12,6 +12,7 @@ import { runCycle } from '../src/engine/cycle.js';
 import { strategyResults, wilson, calibration, verdict, goLiveChecks, coinResults, priceHistory } from '../src/engine/stats.js';
 import { Store } from '../src/db.js';
 import { DEFAULTS } from '../src/config.js';
+import { suspectPrice, checkSavedPrices } from '../src/engine/sanity.js';
 import { runSettings, canContinue } from '../src/engine/runs.js';
 import { resolveStrategies } from '../src/engine/strategies.js';
 import STRATEGY_DEFS from '../src/strategies.js';
@@ -595,9 +596,11 @@ test('a new run keeps pricing and closing trades left open in the old run', asyn
   const store = new Store(':memory:');
   let now = 10_000_000;
   let price = 1;
+  // A real move: FDV moves with the price and the pool's liquidity with its square root (see sanity.js).
+  const real = () => ({ priceUsd: price, fdvUsd: 100_000 * price, marketCapUsd: 100_000 * price, liquidityUsd: 200_000 * Math.sqrt(price) });
   const pools = () => [
-    snap({ ts: now, poolAddress: 'P1', symbol: 'A', priceUsd: price, buyersM5: 50, sellersM5: 5 }),
-    snap({ ts: now, poolAddress: 'P2', symbol: 'B', priceUsd: price, trendingRank: 2 }),
+    snap({ ts: now, poolAddress: 'P1', symbol: 'A', ...real(), buyersM5: 50, sellersM5: 5 }),
+    snap({ ts: now, poolAddress: 'P2', symbol: 'B', ...real(), trendingRank: 2 }),
   ];
   const first = await falcon();
   const old = { store, provider: fakeProvider(() => now, pools), strategies: first, config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, first), 0) };
@@ -618,5 +621,55 @@ test('a new run keeps pricing and closing trades left open in the old run', asyn
   assert.equal(closedOld.length, 2, 'the old run\'s open trades close under their own exits');
   assert.ok(closedOld.every((t) => t.exitReason === 'take_profit' && t.sizeUsd === DEFAULTS.trade.sizeUsd));
   assert.equal(store.trades({ status: 'open', runId: old.runId }).length, 0);
+  store.close();
+});
+
+test('price sanity: a jump the pool and FDV did not move with is not trusted', () => {
+  /** @param {number} ts @param {number} priceUsd @param {number} liquidityUsd @param {number} fdvUsd */
+  const at = (ts, priceUsd, liquidityUsd, fdvUsd) => ({ ts, priceUsd, liquidityUsd, fdvUsd });
+  // SPEC on 2026-10-04: 4.1x in a minute, liquidity flat, FDV only 2.8x.
+  const before = at(0, 0.00021069, 3.16e5, 2.09e5);
+  assert.match(String(suspectPrice(at(60_000, 0.00086539, 3.181e5, 5.771e5), before)), /liquidity .* and FDV/);
+  // A real 4x: liquidity about 2x (square root), FDV 4x.
+  assert.equal(suspectPrice(at(60_000, 0.00084, 6.3e5, 8.36e5), before), null);
+  // A real crash where liquidity left with the price.
+  assert.equal(suspectPrice(at(60_000, 0.00002, 0.9e5, 0.2e5), before), null);
+  // Ordinary moves aren't checked; neither is a reading after a long gap.
+  assert.equal(suspectPrice(at(60_000, 0.0003, 3.16e5, 2.09e5), before), null);
+  assert.equal(suspectPrice(at(3600_000, 0.00086539, 3.181e5, 5.771e5), before), null);
+});
+
+test('a bad price reading does not close a trade, and old trades made on one are left out', async () => {
+  const store = new Store(':memory:');
+  let now = 10_000_000;
+  let reading = { priceUsd: 1, fdvUsd: 100_000, marketCapUsd: 100_000, liquidityUsd: 200_000 };
+  const pools = () => [snap({ ts: now, poolAddress: 'P1', symbol: 'A', ...reading, buyersM5: 50, sellersM5: 5 })];
+  const strategies = await falcon();
+  const deps = { store, provider: fakeProvider(() => now, pools), strategies, config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, strategies), 0) };
+  await runCycle(deps);
+  now += 60_000;
+  const held = (await runCycle(deps)).opened.length;
+  assert.ok(held >= 1);
+
+  // A glitch: 4x the price, nothing else moved. Take profit (+40%) must not fire on it.
+  now += 60_000;
+  reading = { ...reading, priceUsd: 4 };
+  const glitch = await runCycle(deps);
+  assert.equal(glitch.closed.length, 0);
+  assert.equal(store.flaggedReadings().length, 1);
+  assert.equal(store.trades({ status: 'open' }).length, held);
+  // Back to normal next poll: still open, nothing was sold at the bad price.
+  now += 60_000;
+  reading = { ...reading, priceUsd: 1.02 };
+  assert.equal((await runCycle(deps)).closed.length, 0);
+
+  // A trade an older version closed at that reading is kept, but flagged and not counted.
+  const [open] = store.trades({ status: 'open', book: strategies[0].id });
+  const bad = store.flaggedReadings()[0];
+  store.updateTrade({ ...open, status: 'closed', closedAt: now, exitSnapshotId: bad.snapshotId, exitPrice: 4, exitFillPrice: 3.9, exitReason: 'take_profit', pnlUsd: 280, pnlPct: 2.8, proceedsUsd: 380 });
+  assert.equal(checkSavedPrices(store, now), 1, 'checking the history again finds the same one reading');
+  const [flagged] = store.trades({ status: 'closed' });
+  assert.match(String(flagged.dataFlag), /price 4x/);
+  assert.equal(store.cashDelta(flagged.book, deps.runId), 0, 'its made-up profit is not cash');
   store.close();
 });

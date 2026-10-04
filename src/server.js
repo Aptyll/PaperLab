@@ -152,6 +152,7 @@ export function createServer({ store, config, signals, strategies, provider, app
       return {
         snapshots: store.poolHistory(pool, { limit: 3000 }),
         trades: store.trades({ poolAddress: pool, runId: runOf(q), limit: 500 }),
+        heldBack: store.flaggedReadings([pool]),
       };
     }
     if (pathname === '/api/signals') return signalMeta;
@@ -181,12 +182,17 @@ export function createServer({ store, config, signals, strategies, provider, app
     if (pathname === '/api/coin-results') {
       // Optional ?strategies=a,b limits it to the strategies on screen.
       const only = q.get('strategies')?.split(',').filter(Boolean);
-      const trades = store.trades({ runId: runOf(q) }).filter((t) => !only || only.includes(t.strategy));
+      const trades = store.trades({ runId: runOf(q) }).filter((t) => !t.dataFlag && (!only || only.includes(t.strategy)));
       return coinResults(trades, latestPrice);
     }
     if (pathname === '/api/results') {
       const run = runOf(q);
-      const trades = store.trades({ runId: run });
+      const all = store.trades({ runId: run });
+      // Trades made on a price reading the sanity check flagged are left out, and listed so the page can say so.
+      const trades = all.filter((t) => !t.dataFlag);
+      const excluded = all
+        .filter((t) => t.dataFlag && (t.status === 'open' || t.status === 'closed'))
+        .map((t) => ({ id: t.id, strategy: t.strategy, book: t.book, symbol: t.symbol, poolAddress: t.poolAddress, status: t.status, openedAt: t.openedAt, closedAt: t.closedAt, pnlUsd: t.pnlUsd, reason: t.dataFlag }));
       const info = store.runs().find((r) => r.id === run);
       const settings = info?.settings;
       const start = info?.startedAt ?? 0;
@@ -204,6 +210,7 @@ export function createServer({ store, config, signals, strategies, provider, app
         // Paper-run clock from the go-live rules: stops longer than 5 minutes don't count.
         clock: { startedAt: start, activeMs: store.activeMs(start, end, GO_LIVE.maxGapMs), targetMs: GO_LIVE.paperRunMs },
         calibration: calibration(trades),
+        excluded,
       };
     }
     return undefined;

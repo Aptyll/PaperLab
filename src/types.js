@@ -112,7 +112,7 @@
  *   cancelled: never filled (price ran away, or no fresh data). Cancelled trades cost nothing and are left out of results.
  * @typedef {'take_profit'|'stop_loss'|'time_limit'|'no_data'|'collapsed'} ExitReason
  *   collapsed: the pool lost most of its liquidity while held; sold into what was left.
- * @typedef {'chased'|'no_data'|'twin_cancelled'} CancelReason
+ * @typedef {'chased'|'no_data'|'twin_cancelled'|'bad_price'} CancelReason
  */
 
 /**
@@ -157,6 +157,7 @@
  * @property {string|null} aiModel
  * @property {string|null} aiRationale
  * @property {number|null} runId     The run (rule set) it belongs to. See src/engine/runs.js.
+ * @property {string|null} [dataFlag] Set when it was bought or sold on a price reading the sanity check flagged: such trades are left out of results.
  */
 
 /**

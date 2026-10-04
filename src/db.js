@@ -151,6 +151,14 @@ CREATE TABLE IF NOT EXISTS snapshots (
   pool_created_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS snapshots_pool_ts ON snapshots (pool_address, ts);
+
+-- Readings the price sanity check doesn't trust (src/engine/sanity.js). The
+-- snapshot itself is kept as received; this only says not to act on it.
+CREATE TABLE IF NOT EXISTS snapshot_flags (
+  snapshot_id INTEGER PRIMARY KEY REFERENCES snapshots(id),
+  reason TEXT NOT NULL,
+  flagged_at INTEGER NOT NULL
+);
 CREATE INDEX IF NOT EXISTS snapshots_ts ON snapshots (ts);
 
 CREATE TABLE IF NOT EXISTS polls (
@@ -222,6 +230,11 @@ CREATE INDEX IF NOT EXISTS trades_strategy_status ON trades (strategy, status);
 CREATE INDEX IF NOT EXISTS trades_book_pool ON trades (book, pool_address, status);
 CREATE INDEX IF NOT EXISTS trades_pool_status ON trades (pool_address, status);
 `;
+
+/** Snapshots the price sanity check trusts. */
+const TRUSTED = 'id NOT IN (SELECT snapshot_id FROM snapshot_flags)';
+/** Why a trade can't be trusted: the sanity flag on the reading it was bought or sold at, if any. */
+const TRADE_FLAG = '(SELECT reason FROM snapshot_flags f WHERE f.snapshot_id IN (trades.entry_snapshot_id, trades.exit_snapshot_id) LIMIT 1)';
 
 const MANAGED = "(run_id IS NULL OR run_id NOT IN (SELECT id FROM runs WHERE origin = 'imported'))";
 const SNAPSHOT_SQL_COLS = SNAPSHOT_COLS.map((c) => c[1]).join(', ');
@@ -631,7 +644,7 @@ export class Store {
   }
 
   /**
-   * Snapshots of one pool, oldest first.
+   * Trusted snapshots of one pool, oldest first (readings the sanity check flagged are left out).
    * @param {string} poolAddress
    * @param {{sinceTs?: number, beforeId?: number, limit?: number}} [opts]
    * @returns {Snapshot[]}
@@ -641,7 +654,7 @@ export class Store {
       .prepare(
         `SELECT * FROM (
            SELECT * FROM snapshots
-           WHERE pool_address = ? AND ts >= ? AND id < ?
+           WHERE pool_address = ? AND ts >= ? AND id < ? AND ${TRUSTED}
            ORDER BY ts DESC, id DESC LIMIT ?
          ) ORDER BY ts ASC, id ASC`,
       )
@@ -650,14 +663,76 @@ export class Store {
   }
 
   /**
+   * The pool's latest trusted snapshot (before a snapshot id, if given).
    * @param {string} poolAddress
+   * @param {number} [beforeId]
    * @returns {Snapshot|null}
    */
-  latestSnapshot(poolAddress) {
+  latestSnapshot(poolAddress, beforeId = Number.MAX_SAFE_INTEGER) {
     const r = this.db
-      .prepare('SELECT * FROM snapshots WHERE pool_address = ? ORDER BY ts DESC, id DESC LIMIT 1')
-      .get(poolAddress);
+      .prepare(`SELECT * FROM snapshots WHERE pool_address = ? AND id < ? AND ${TRUSTED} ORDER BY ts DESC, id DESC LIMIT 1`)
+      .get(poolAddress, beforeId);
     return r ? /** @type {Snapshot} */ (fromRow(SNAPSHOT_COLS, r)) : null;
+  }
+
+  /**
+   * Record readings the sanity check doesn't trust. A reading flagged once stays flagged.
+   * @param {Map<number, string>} flags  Snapshot id to reason.
+   * @param {number} at
+   */
+  flagSnapshots(flags, at) {
+    const stmt = this.db.prepare('INSERT OR IGNORE INTO snapshot_flags (snapshot_id, reason, flagged_at) VALUES (?, ?, ?)');
+    this.tx(() => {
+      for (const [id, reason] of flags) stmt.run(id, reason, at);
+    });
+  }
+
+  /**
+   * Flagged readings, newest first, optionally only of some pools.
+   * @param {string[]} [pools]
+   * @returns {{snapshotId: number, poolAddress: string, symbol: string, ts: number, priceUsd: number, reason: string}[]}
+   */
+  flaggedReadings(pools) {
+    const rows = this.db
+      .prepare(
+        `SELECT f.snapshot_id, s.pool_address, s.symbol, s.ts, s.price_usd, f.reason FROM snapshot_flags f JOIN snapshots s ON s.id = f.snapshot_id
+         ${pools ? 'WHERE s.pool_address IN (SELECT value FROM json_each(?))' : ''} ORDER BY s.ts DESC`,
+      )
+      .all(...(pools ? [JSON.stringify(pools)] : []));
+    return rows.map((r) => ({
+      snapshotId: Number(r.snapshot_id),
+      poolAddress: String(r.pool_address),
+      symbol: String(r.symbol),
+      ts: Number(r.ts),
+      priceUsd: Number(r.price_usd),
+      reason: String(r.reason),
+    }));
+  }
+
+  /**
+   * Every pool's readings in order, for checking the whole history once.
+   * @param {(pool: string, readings: {id: number, ts: number, priceUsd: number, fdvUsd: number|null, liquidityUsd: number|null}[]) => void} each
+   */
+  eachPoolReadings(each) {
+    /** @type {string|null} */
+    let pool = null;
+    /** @type {{id: number, ts: number, priceUsd: number, fdvUsd: number|null, liquidityUsd: number|null}[]} */
+    let rows = [];
+    for (const r of this.db.prepare('SELECT id, pool_address, ts, price_usd, fdv_usd, liquidity_usd FROM snapshots ORDER BY pool_address, ts, id').iterate()) {
+      if (r.pool_address !== pool) {
+        if (pool !== null) each(pool, rows);
+        pool = String(r.pool_address);
+        rows = [];
+      }
+      rows.push({
+        id: Number(r.id),
+        ts: Number(r.ts),
+        priceUsd: Number(r.price_usd),
+        fdvUsd: r.fdv_usd === null ? null : Number(r.fdv_usd),
+        liquidityUsd: r.liquidity_usd === null ? null : Number(r.liquidity_usd),
+      });
+    }
+    if (pool !== null) each(pool, rows);
   }
 
   /**
@@ -689,7 +764,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT pool_address, ts, price_usd, liquidity_usd FROM snapshots
-         WHERE pool_address IN (SELECT value FROM json_each(?)) AND ts >= ? AND ts <= ?
+         WHERE pool_address IN (SELECT value FROM json_each(?)) AND ts >= ? AND ts <= ? AND ${TRUSTED}
          ORDER BY pool_address, ts, id`,
       )
       .all(JSON.stringify(pools), sinceTs, untilTs);
@@ -811,12 +886,12 @@ export class Store {
     if (f.book) (where.push('book = ?'), args.push(f.book));
     if (f.status) (where.push('status = ?'), args.push(f.status));
     if (f.poolAddress) (where.push('pool_address = ?'), args.push(f.poolAddress));
-    const sql = `SELECT * FROM trades ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY signal_at DESC, id DESC LIMIT ?`;
+    const sql = `SELECT *, ${TRADE_FLAG} AS data_flag FROM trades ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY signal_at DESC, id DESC LIMIT ?`;
     args.push(f.limit ?? 100000);
     return this.db
       .prepare(sql)
       .all(...args)
-      .map((r) => /** @type {PaperTrade} */ (fromRow(TRADE_COLS, r)));
+      .map((r) => /** @type {PaperTrade} */ ({ ...fromRow(TRADE_COLS, r), dataFlag: r.data_flag ?? null }));
   }
 
   /**
@@ -858,7 +933,10 @@ export class Store {
   cashDelta(book, runId) {
     const r = /** @type {{d: number|null}|undefined} */ (
       this.db
-        .prepare("SELECT SUM(CASE WHEN status IN ('open', 'pending') THEN -size_usd WHEN status = 'closed' THEN pnl_usd ELSE 0 END) AS d FROM trades WHERE book = ? AND run_id = ?")
+        // A trade made on a reading the sanity check flagged doesn't count, either way.
+        .prepare(
+          `SELECT SUM(CASE WHEN ${TRADE_FLAG} IS NOT NULL THEN 0 WHEN status IN ('open', 'pending') THEN -size_usd WHEN status = 'closed' THEN pnl_usd ELSE 0 END) AS d FROM trades WHERE book = ? AND run_id = ?`,
+        )
         .get(book, runId)
     );
     return r?.d ?? 0;

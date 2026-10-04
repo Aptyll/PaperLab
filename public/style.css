@@ -383,3 +383,9 @@ a.tick:hover { text-decoration: none; background: color-mix(in srgb, var(--c) 10
 /* Buy and sell marks in text, matching the chart: a hollow ring buys, a solid dot sells. */
 .mk { display: inline-block; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--c); flex: none; vertical-align: middle; box-sizing: border-box; }
 .mk.sell { background: var(--c); box-shadow: 0 0 0 1px var(--bg), 0 0 0 2px var(--c); width: 6px; height: 6px; border: 0; margin: 0 1px; }
+
+/* Trades left out because of a bad price reading: said quietly, never hidden. */
+.data-note { font-size: 12px; color: var(--text-secondary); margin: -4px 0 8px; }
+.data-note a { color: var(--text-muted); }
+.flag-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--warning); margin-right: 7px; vertical-align: 1px; }
+.flag-note { color: var(--warning); font-size: 11px; white-space: nowrap; }

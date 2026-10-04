@@ -298,6 +298,20 @@ function pastRunBanner() {
   </div>`;
 }
 
+/**
+ * Trades left out of the results because they were bought or sold on a price
+ * reading that looked wrong. Quiet, but always said: a big win that isn't real
+ * must not pass as one.
+ * @param {any[]} [excluded]
+ */
+function dataNote(excluded) {
+  if (!excluded?.length) return '';
+  const coins = [...new Set(excluded.map((t) => t.symbol))];
+  const sum = excluded.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
+  const detail = excluded.map((t) => `${nameOf(t.strategy === 'random' ? t.book.split(':')[1] ?? t.strategy : t.strategy)}${t.strategy === 'random' ? ' (random)' : ''}: ${t.symbol} ${t.pnlUsd === null ? 'open' : money(t.pnlUsd)}. ${t.reason}`).join('\n');
+  return `<div class="data-note" title="${esc(detail)}"><span class="flag-dot"></span>${excluded.length} trade${excluded.length === 1 ? '' : 's'} on ${esc(coins.join(', '))} left out: ${excluded.length === 1 ? 'it was' : 'they were'} bought or sold on a price reading that looked wrong${sum ? ` (${money(sum)} not counted)` : ''}. <a href="#/guide/bad-prices">Why</a></div>`;
+}
+
 /** Which run the scoreboard shows, and where the earlier ones are. Quiet, at the end of the strip. */
 function runMark() {
   const runs = runsInOrder();
@@ -627,6 +641,7 @@ function balanceChart(el, lines, start, span = {}) {
   const events = [];
   for (const l of lines) {
     for (const t of l.trades ?? []) {
+      if (t.dataFlag) continue;
       if (t.openedAt && t.openedAt >= from) events.push({ t: t.openedAt, sell: false, line: l, trade: t });
       if (t.closedAt && t.status === 'closed') events.push({ t: t.closedAt, sell: true, line: l, trade: t });
     }
@@ -757,7 +772,7 @@ function priceChart(el, snapshots, trades) {
   /** @type {TradeMark[]} */
   const marks = [];
   for (const t of trades) {
-    if (!t.openedAt || t.entryPrice === null) continue;
+    if (!t.openedAt || t.entryPrice === null || t.dataFlag) continue;
     const color = t.strategy === 'random' ? css('--baseline') : colorOf(t.strategy);
     const buy = { time: Math.floor(t.openedAt / 1000), value: t.entryPrice };
     if (buy.time >= first) marks.push({ ...buy, sell: false, color });
@@ -833,11 +848,18 @@ function panel(key, title, body, openByDefault = true) {
 
 /** One-line plain explanation of how a trade ended (or where it stands). @param {any} t */
 function outcome(t) {
+  const base = outcomeText(t);
+  // Bought or sold on a price reading the sanity check doesn't trust: shown, but not counted.
+  return t.dataFlag ? `<s class="muted">${base}</s> <span class="flag-note" title="${esc(t.dataFlag)}">left out: bad price reading</span>` : base;
+}
+
+/** @param {any} t */
+function outcomeText(t) {
   if (t.status === 'pending') return '<span class="secondary">buying at next price check</span>';
   if (t.status === 'cancelled') {
     return `<span class="muted">skipped: ${esc(
-      { chased: 'price jumped 5%+ before it could buy', no_data: 'no fresh price to buy at', twin_cancelled: 'its strategy skipped too' }[
-        /** @type {'chased'|'no_data'|'twin_cancelled'} */ (t.cancelReason)
+      { chased: 'price jumped 5%+ before it could buy', no_data: 'no fresh price to buy at', twin_cancelled: 'its strategy skipped too', bad_price: 'price reading looked wrong' }[
+        /** @type {'chased'|'no_data'|'twin_cancelled'|'bad_price'} */ (t.cancelReason)
       ] ?? t.cancelReason,
     )}</span>`;
   }
@@ -887,6 +909,7 @@ async function scoreboardPage(view) {
     <div class="first-screen">
       ${pastRunBanner()}
       ${rows.length ? `<div class="ticks">${portfolioTick(rows)}${rows.map(strategyTick).join('')}${runMark()}</div>` : '<div class="empty">No active strategies.</div>'}
+      ${dataNote(res.excluded)}
       <div class="chart-row">
         <div class="chart-box fill">
           <div class="chart" id="balance"></div>
@@ -1066,6 +1089,7 @@ async function rulePage(view, id) {
         <div><div class="k">Closed</div><div class="v">${r.all.closed}</div><div class="s">${active.length} open · ${skipped.length} skipped</div></div>
       </div>
     </div>
+    ${dataNote((res.excluded ?? []).filter((/** @type {any} */ t) => t.book === id || t.book === `random:${id}`))}
 
     ${panel('rule-checks', `Go-live checks <span class="count">${r.checks.filter((/** @type {any} */ c) => c.pass).length}/${r.checks.length}</span>`, verdictLine + checks, false)}
     ${panel('rule-balance', `Balance <span class="key-dash" title="Dashed line: its random picker"></span>`, '<div class="chart-box"><div class="chart" id="balance"></div></div>')}
@@ -1146,7 +1170,7 @@ async function coinsPage(view) {
 
 /** @param {HTMLElement} view @param {string} pool */
 async function coinPage(view, pool) {
-  const { snapshots, trades } = await getJson(forRun(`/api/pools/${encodeURIComponent(pool)}`));
+  const { snapshots, trades, heldBack } = await getJson(forRun(`/api/pools/${encodeURIComponent(pool)}`));
   const s = snapshots[snapshots.length - 1];
   if (!s) {
     view.innerHTML = `<div class="page"><a class="back" href="#/coins">← Coins</a><div class="empty">No data for this coin.</div></div>`;
@@ -1168,6 +1192,7 @@ async function coinPage(view, pool) {
     </div>
     <h2>Price <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· <span class="mk buy" style="--c:var(--text-secondary)"></span> buy <span class="mk sell" style="--c:var(--text-secondary)"></span> sell, colored by strategy, grey for random</span></h2>
     <div class="chart-box"><div class="readout"></div><div class="chart tall" id="price"></div></div>
+    ${heldBack?.length ? `<div class="data-note"><span class="flag-dot"></span>${heldBack.length} price reading${heldBack.length === 1 ? '' : 's'} held back as wrong and left off the chart: ${heldBack.slice(0, 3).map((/** @type {any} */ h) => `${esc(clock(h.ts))} ${esc(price(h.priceUsd))} (${esc(h.reason)})`).join('; ')}${heldBack.length > 3 ? `; and ${heldBack.length - 3} more` : ''}. <a href="#/guide/bad-prices">Why</a></div>` : ''}
     <h2>Trades on this coin (${filled.length})</h2>
     ${filled.length ? `<table class="t compact"><tbody>${filled.map((/** @type {any} */ t) => `<tr><td class="muted mono">${clock(t.openedAt ?? t.signalAt)}</td><td><span class="rule-name">${t.strategy === 'random' ? '<span class="dot random"></span>' : dot(t.strategy)}${esc(owner(t))}</span></td><td class="wrap">${outcome(t)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No strategy has traded this coin.</div>'}
   </div>`;
@@ -1235,6 +1260,7 @@ function guidePage(view) {
     <p><b>Buys and sells.</b> The chart marks the latest buys (hollow ring) and sells (solid dot) on each strategy's line, with a faint dotted line from each sell back to its buy, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
+    <p id="bad-prices"><b>Bad prices.</b> Now and then the price source returns a reading that can't be right, like a coin jumping 4x in a minute while its pool's liquidity doesn't move. Every reading is checked: when the price moves 2x or more, the pool's liquidity and the coin's FDV have to move with it, the way they do when people really trade. A reading that fails is kept but held back: nothing buys, sells or values a trade on it, and the coin's price chart leaves it out. Trades made on such a reading before this check existed are crossed out and left out of the results, with a note under the strip. Nothing is deleted.</p>
     <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not.</p>
     <h2 id="past-runs">Past runs</h2>
     <p class="muted">Click a run to see its scoreboard as it ended. "Back to now" returns to the current run.</p>
