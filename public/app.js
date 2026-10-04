@@ -9,6 +9,7 @@
 //   #/coins        Trending coins
 //   #/coin/<pool>  One coin: price chart with every trade marked
 //   #/guide        How it all works, and past runs
+//   #/notes        The research notebook (files in notes/), newest first
 //
 // A strategy is a code-name (Falcon, Hawk...) plus one rule and its exits.
 // The home screen, its chart and the portfolio number cover active (not
@@ -214,7 +215,7 @@ function renderTopbar() {
   document.querySelector('.topbar')?.classList.toggle('pinned', s.live && !(healthy && !failed));
   renderMenu();
   const r = route();
-  const here = r.page === 'coins' || r.page === 'coin' ? 'coins' : r.page === 'guide' ? 'guide' : 'home';
+  const here = r.page === 'coins' || r.page === 'coin' ? 'coins' : r.page === 'guide' || r.page === 'notes' ? r.page : 'home';
   for (const a of document.querySelectorAll('.nav a')) a.classList.toggle('active', a.getAttribute('data-nav') === here);
 }
 
@@ -1319,10 +1320,44 @@ function firesTable(events) {
     .join('')}</tbody></table>`;
 }
 
+/** Turnover labels in plain words: what Noah's reading says each one means. */
+const TURNOVER_TEXT = /** @type {Record<string, [string, string]>} */ ({
+  attention: ['Attention', 'Heavy trading, speeding up, price rising: new buyers absorbing sellers.'],
+  distribution: ['Distribution', 'Heavy trading but the price is flat or falling: early holders may be selling into the hype.'],
+  fading: ['Fading', 'Trading is slowing while the price holds: attention leaving, and price usually follows.'],
+});
+
+/** One coin's turnover reading: 1h volume as a share of its value, and its label. @param {any} r */
+function turnoverCell(r) {
+  if (!r || r.turnover === null) return '–';
+  const pace = r.pace === null ? 'not enough history for a pace' : `the last hour traded ${r.pace.toFixed(1)}x its usual hourly pace`;
+  const tip = `${share(r.turnover)} of the coin's value traded in the last hour; ${pace}.${r.label ? ` ${TURNOVER_TEXT[r.label][1]}` : ''}`;
+  return `<span title="${esc(tip)}">${share(r.turnover)}${r.label ? ` <span class="t-label ${r.label}">${TURNOVER_TEXT[r.label][0]}</span>` : ''}</span>`;
+}
+
+/** What the turnover labels were followed by, from Paper Lab's own saved readings. @param {any} replay */
+function turnoverReplay(replay) {
+  const rows = replay.rows
+    .map((/** @type {any} */ r) => {
+      const name = r.label === 'all' ? 'Any reading' : TURNOVER_TEXT[r.label][0];
+      const few = r.readings < MIN_TRADES;
+      return `<tr${r.label === 'all' ? ' class="muted"' : ''}>
+        <td>${r.label === 'all' ? name : `<span class="t-label ${r.label}">${name}</span>`}</td>
+        <td class="num">${r.readings}</td><td class="num">${r.coins}</td>
+        <td class="num">${few ? '<span class="muted">too few</span>' : share(r.up / r.readings)}</td>
+        <td class="num ${few ? '' : tone(r.medianMove)}">${few || r.medianMove === null ? '–' : pct(r.medianMove)}</td>
+      </tr>`;
+    })
+    .join('');
+  return `<div class="page-head trending-head"><h1>Turnover check</h1><span class="muted">what the price did ${replay.settings.afterMin} minutes after each label, from every reading saved so far</span></div>
+    <table class="t compact replay-table"><thead><tr><th>Label</th><th class="num" title="Each coin counts at most once per label every ${replay.settings.spacingMin} minutes">Readings</th><th class="num">Coins</th><th class="num">Price higher</th><th class="num">Median move</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="legend-note">Compare each label with <b>Any reading</b>: a label only means something if it does clearly better or worse. Under ${MIN_TRADES} readings it says too few. <a href="#/guide/turnover">How it works</a></p>`;
+}
+
 /** @param {HTMLElement} view */
 async function coinsPage(view) {
   const active = state.status.strategies.filter((/** @type {any} */ s) => !s.retired).map((/** @type {any} */ s) => s.id);
-  const [tokens, coins] = await Promise.all([getJson('/api/tokens'), getJson(`/api/coin-results?strategies=${encodeURIComponent(active.join(','))}`)]);
+  const [tokens, coins, replay] = await Promise.all([getJson('/api/tokens'), getJson(`/api/coin-results?strategies=${encodeURIComponent(active.join(','))}`), getJson('/api/turnover-replay')]);
   const min = state.status.universe.minLiquidityUsd;
   const ratio = (/** @type {any} */ t) => {
     const b = t.buyersM5 ?? t.buysM5;
@@ -1347,6 +1382,7 @@ async function coinsPage(view) {
         <td class="num">${usd(t.liquidityUsd)}</td>
         <td class="num ${t.marketCapUsd > 0 ? '' : 'italic'}">${usd(capOf(t))}</td>
         <td class="num">${usd(t.volH1)}</td>
+        <td class="num">${turnoverCell(t.turnover)}</td>
         <td class="num">${r === null ? '–' : r.toFixed(1)}</td>
         <td class="num muted">${ago(t.poolCreatedAt)}</td>
       </tr>`;
@@ -1359,14 +1395,16 @@ async function coinsPage(view) {
     ${tokens.length ? `<div class="scroll-x"><table class="t"><thead><tr>
       <th class="num">#</th><th>Coin</th><th class="num">Price</th>${hasChange ? '<th class="num">5m</th>' : ''}<th class="num">Liquidity</th>
       <th class="num" title="Market cap (italic: fully diluted value, when market cap is missing)">Mkt cap</th><th class="num">Vol 1h</th>
+      <th class="num" title="Turnover: the last hour's volume as a share of market cap. Hover a coin's number for its pace and label.">Turnover</th>
       <th class="num" title="Unique buyers per seller, last 5 minutes">Buyers/seller</th><th class="num">Age</th>
     </tr></thead><tbody>${rows}</tbody></table></div>` : '<div class="empty">Waiting for the first update.</div>'}
+    ${turnoverReplay(replay)}
   </div>`;
 }
 
 /** @param {HTMLElement} view @param {string} pool */
 async function coinPage(view, pool) {
-  const { snapshots, trades, heldBack } = await getJson(forRun(`/api/pools/${encodeURIComponent(pool)}`));
+  const { snapshots, turnover, trades, heldBack } = await getJson(forRun(`/api/pools/${encodeURIComponent(pool)}`));
   const s = snapshots[snapshots.length - 1];
   if (!s) {
     view.innerHTML = `<div class="page"><a class="back" href="#/coins">← Coins</a><div class="empty">No data for this coin.</div></div>`;
@@ -1384,15 +1422,37 @@ async function coinPage(view, pool) {
       <div><div class="k">Liquidity</div><div class="v">${usd(s.liquidityUsd)}</div><div class="s">${cap ? `${Math.round((s.liquidityUsd / cap) * 100)}% of cap` : ''}</div></div>
       <div><div class="k">${s.marketCapUsd > 0 ? 'Market cap' : 'FDV'}</div><div class="v">${usd(cap)}</div><div class="s">age ${ago(s.poolCreatedAt)}</div></div>
       <div><div class="k">Volume 5m / 1h</div><div class="v">${usd(s.volM5)}</div><div class="s">${usd(s.volH1)} 1h</div></div>
+      <div><div class="k">Turnover 1h</div><div class="v">${turnoverCell(turnover[turnover.length - 1])}</div><div class="s">${turnover[turnover.length - 1]?.pace == null ? '' : `${turnover[turnover.length - 1].pace.toFixed(1)}x usual pace`}</div></div>
       <div><div class="k">Buyers / sellers 5m</div><div class="v">${s.buyersM5 ?? '–'} / ${s.sellersM5 ?? '–'}</div><div class="s">${s.buysM5 ?? '–'} / ${s.sellsM5 ?? '–'} trades</div></div>
     </div>
     <h2>Price <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· <span class="mk buy" style="--c:var(--text-secondary)"></span> buy <span class="mk sell" style="--c:var(--text-secondary)"></span> sell, colored by strategy, grey for random</span></h2>
     <div class="chart-box"><div class="readout"></div><div class="chart tall" id="price"></div></div>
+    <h2>Turnover <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· last hour's volume as a share of market cap</span></h2>
+    <div class="chart-box"><div class="readout"></div><div class="chart short" id="turnover"></div></div>
     ${heldBack?.length ? `<div class="data-note"><span class="flag-dot"></span>${heldBack.length} price reading${heldBack.length === 1 ? '' : 's'} held back as wrong and left off the chart: ${heldBack.slice(0, 3).map((/** @type {any} */ h) => `${esc(clock(h.ts))} ${esc(price(h.priceUsd))} (${esc(h.reason)})`).join('; ')}${heldBack.length > 3 ? `; and ${heldBack.length - 3} more` : ''}. <a href="#/guide/bad-prices">Why</a></div>` : ''}
     <h2>Trades on this coin (${filled.length})</h2>
     ${filled.length ? `<table class="t compact"><tbody>${filled.map((/** @type {any} */ t) => `<tr><td class="muted mono">${clock(t.openedAt ?? t.signalAt)}</td><td><span class="rule-name">${t.strategy === 'random' ? '<span class="dot random"></span>' : dot(t.strategy)}${esc(owner(t))}</span></td><td class="wrap">${outcome(t)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No strategy has traded this coin.</div>'}
   </div>`;
   priceChart(/** @type {HTMLElement} */ (document.getElementById('price')), snapshots, filled);
+  turnoverChart(/** @type {HTMLElement} */ (document.getElementById('turnover')), turnover);
+}
+
+/**
+ * The coin's turnover over time, with a faint line at the "high" mark.
+ * @param {HTMLElement} el
+ * @param {any[]} points
+ */
+function turnoverChart(el, points) {
+  const chart = baseChart(el, share);
+  const series = chart.addSeries(LWC.LineSeries, { color: css('--text-secondary'), lineWidth: 1, priceFormat: { type: 'custom', formatter: share, minMove: 0.001 } });
+  series.setData(toSeries(points.filter((p) => p.turnover !== null).map((p) => ({ t: p.ts, v: p.turnover }))));
+  series.createPriceLine({ price: state.status.turnover.high, color: css('--chart-start'), lineWidth: 1, lineStyle: 2, axisLabelVisible: false, title: 'high' });
+  chart.timeScale().fitContent();
+  const readout = /** @type {HTMLElement|null} */ (el.parentElement?.querySelector('.readout') ?? null);
+  chart.subscribeCrosshairMove((/** @type {any} */ p) => {
+    const v = p?.seriesData?.get(series);
+    if (readout) readout.textContent = v ? `${new Date(p.time * 1000).toLocaleTimeString()}  ${share(v.value)}` : '';
+  });
 }
 
 /** One rule in plain words, numbers from its settings. @param {any} s */
@@ -1459,12 +1519,100 @@ function guidePage(view) {
     <p><b>Hot now.</b> Top right: coins a strategy's rule fired on in the last 15 minutes, the ones the strategies are buying right now. Coins where more different rules agree come first (a fast and a slow version of one rule count once), then the best odds. The odds are measured, not guessed: how often that strategy's past paper trades reached its take profit before its stop loss or time limit, out of how many trades, next to its random picker's rate for comparison. Under 10 trades it says so instead of showing a rate. The percent on the right is how far the price has moved since the first signal, so you can see if you'd be late. Hover a coin for every strategy's numbers. It's there to point you at coins worth a look; you decide.</p>
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
+    <p id="turnover"><b>Turnover.</b> The last hour's trading volume as a share of the coin's market cap: 50% means half the coin's value changed hands in an hour. On the Coins page and each coin's page. Three labels follow a reading of how turnover and price move together. <b>Attention</b>: turnover at least ${share(st.turnover.high)}, trading at or above its usual pace, and price up ${share(st.turnover.flatPrice)} or more in the hour, meaning new buyers are absorbing sellers. <b>Distribution</b>: turnover at least ${share(st.turnover.high)} but price flat or down, meaning early holders may be selling into the hype. <b>Fading</b>: the last hour traded under ${st.turnover.falling}x the coin's usual hourly pace (its average over the last 6 hours) while the price holds, meaning attention is leaving. These cut-offs are first guesses. The Turnover check under the Coins page tests them: for every saved reading it looks at the price ${st.turnover.afterMin} minutes later, counting a coin at most once per label every ${st.turnover.spacingMin} minutes, and compares each label with all readings. Until a label clearly differs from "Any reading" over many coins, treat it as an idea, not as odds. No strategy trades on it.</p>
     <p id="bad-prices"><b>Bad prices.</b> Now and then the price source returns a reading that can't be right, like a coin jumping 4x in a minute while its pool's liquidity doesn't move. Every reading is checked: when the price moves 2x or more, the pool's liquidity and the coin's FDV have to move with it, the way they do when people really trade. A reading that fails is kept but held back: nothing buys, sells or values a trade on it, and the coin's price chart leaves it out. Trades made on such a reading before this check existed are crossed out and left out of the results, with a note under the strip. Nothing is deleted.</p>
     <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not. To start over by hand, click the dot in the menu bar and pick "Start over at ${bank}": every strategy starts a new run at an even balance, and the old run stays under Past runs. Nothing is deleted.</p>
     <h2 id="past-runs">Past runs</h2>
     <p class="muted">Click a run to see its scoreboard as it ended. "Back to now" returns to the current run.</p>
     ${runs.length ? `<table class="t compact runs-table"><tbody>${runRows}</tbody></table>` : '<div class="empty">None yet.</div>'}
     <p class="muted credits">Data: <a href="https://www.geckoterminal.com" target="_blank" rel="noopener">GeckoTerminal</a>. Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a>.</p>
+  </div>`;
+}
+
+// ---------- notes ----------
+
+/**
+ * Inline Markdown: code, bold, italics, links. Escapes first, so a note can never add HTML.
+ * @param {string} text
+ */
+function inlineMd(text) {
+  return esc(text)
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[\s(])\*([^*\s][^*]*)\*/g, '$1<i>$2</i>')
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+
+/**
+ * The small part of Markdown notes use: ## and ### headings, paragraphs, - lists, > quotes.
+ * @param {string} md
+ */
+function markdown(md) {
+  /** @type {string[]} */
+  const out = [];
+  /** @type {string[]} */
+  let para = [];
+  /** @type {string[]} */
+  let list = [];
+  /** @type {string[]} */
+  let quote = [];
+  const flush = () => {
+    if (para.length) out.push(`<p>${inlineMd(para.join(' '))}</p>`);
+    if (list.length) out.push(`<ul>${list.map((l) => `<li>${inlineMd(l)}</li>`).join('')}</ul>`);
+    if (quote.length) out.push(`<blockquote>${inlineMd(quote.join(' '))}</blockquote>`);
+    para = [];
+    list = [];
+    quote = [];
+  };
+  for (const raw of md.split('\n')) {
+    const line = raw.trim();
+    const h = line.match(/^(#{2,4}) +(.+)$/);
+    if (!line) flush();
+    else if (h) {
+      flush();
+      out.push(h[1].length === 2 ? `<h3>${inlineMd(h[2])}</h3>` : `<h4>${inlineMd(h[2])}</h4>`);
+    } else if (/^[-*] +/.test(line)) {
+      if (para.length || quote.length) flush();
+      list.push(line.replace(/^[-*] +/, ''));
+    } else if (line.startsWith('>')) {
+      if (para.length || list.length) flush();
+      quote.push(line.replace(/^> ?/, ''));
+    } else if (list.length && /^\s{2,}/.test(raw)) list[list.length - 1] += ` ${line}`;
+    else {
+      if (list.length || quote.length) flush();
+      para.push(line);
+    }
+  }
+  flush();
+  return out.join('');
+}
+
+/** @param {string} ymd */
+const noteDate = (ymd) => new Date(`${ymd}T12:00:00`).toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+
+/** @param {HTMLElement} view */
+async function notesPage(view) {
+  const notes = await getJson('/api/notes');
+  const index =
+    notes.length > 1
+      ? `<ol class="note-index">${notes.map((/** @type {any} */ n) => `<li><a href="#/notes/${esc(n.id)}"><span class="mono muted">${esc(noteDate(n.date))}</span>${esc(n.title)}</a></li>`).join('')}</ol>`
+      : '';
+  view.innerHTML = `<div class="page notes">
+    <div class="page-head"><h1>Notes</h1><span class="muted">${notes.length} entr${notes.length === 1 ? 'y' : 'ies'}, newest first</span></div>
+    ${index}
+    ${
+      notes.length
+        ? notes
+            .map(
+              (/** @type {any} */ n) => `<article class="note" id="${esc(n.id)}">
+        <div class="note-date mono">${esc(noteDate(n.date))}</div>
+        <h2 class="note-title">${esc(n.title)}</h2>
+        ${markdown(n.body)}
+      </article>`,
+            )
+            .join('')
+        : '<div class="empty">No notes yet. Send one in the project chat and it lands here with the next update.</div>'
+    }
   </div>`;
 }
 
@@ -1477,6 +1625,7 @@ function route() {
   if (page === 'coin' && arg) return { page: 'coin', arg: decodeURIComponent(arg) };
   if (page === 'coins') return { page: 'coins', arg: '' };
   if (page === 'guide') return { page: 'guide', arg: arg ?? '' };
+  if (page === 'notes') return { page: 'notes', arg: arg ?? '' };
   return { page: 'home', arg: '' };
 }
 
@@ -1497,6 +1646,7 @@ async function render() {
     else if (r.page === 'coins') await coinsPage(view);
     else if (r.page === 'coin') await coinPage(view, r.arg);
     else if (r.page === 'guide') guidePage(view);
+    else if (r.page === 'notes') await notesPage(view);
     else await scoreboardPage(view);
     if (key === lastRoute) view.querySelectorAll('details').forEach((d, i) => (d.open = openDetails[i] ?? false));
   } catch (err) {
@@ -1504,7 +1654,7 @@ async function render() {
   } finally {
     view.scrollTop = keepScroll;
     // A link like #/guide/past-runs lands on that section.
-    if (r.page === 'guide' && r.arg && key !== lastRoute) document.getElementById(r.arg)?.scrollIntoView();
+    if ((r.page === 'guide' || r.page === 'notes') && r.arg && key !== lastRoute) document.getElementById(r.arg)?.scrollIntoView();
     lastRoute = key;
     rendering = false;
   }

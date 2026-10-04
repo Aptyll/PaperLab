@@ -769,6 +769,26 @@ export class Store {
   }
 
   /**
+   * Every pool's trusted readings in order, one pool at a time, for replaying history.
+   * @param {(pool: string, rows: Snapshot[]) => void} each
+   */
+  eachPoolSnapshots(each) {
+    /** @type {string|null} */
+    let pool = null;
+    /** @type {Snapshot[]} */
+    let rows = [];
+    for (const r of this.db.prepare(`SELECT * FROM snapshots WHERE ${TRUSTED} ORDER BY pool_address, ts, id`).iterate()) {
+      if (r.pool_address !== pool) {
+        if (pool !== null) each(pool, rows);
+        pool = String(r.pool_address);
+        rows = [];
+      }
+      rows.push(/** @type {Snapshot} */ (fromRow(SNAPSHOT_COLS, r)));
+    }
+    if (pool !== null) each(pool, rows);
+  }
+
+  /**
    * Latest snapshot per pool among pools seen since `sinceTs`, best trending rank first.
    * @param {number} sinceTs
    * @returns {Snapshot[]}

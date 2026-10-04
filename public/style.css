@@ -235,6 +235,30 @@ details.panel[open] > summary { margin-bottom: 0; }
 .trades tr.gap td { border-bottom: none; padding: 4px; }
 .verdict-line { margin: 0 0 8px; }
 
+/* ---- turnover ---- */
+.t-label { font: 600 10px var(--sans); letter-spacing: 0.04em; text-transform: uppercase; margin-left: 4px; color: var(--text-secondary); }
+.t-label.attention { color: var(--good); }
+.t-label.distribution { color: var(--warning); }
+.t-label.fading { color: var(--text-muted); }
+.replay-table { max-width: 640px; }
+
+/* ---- notes ---- */
+.notes { max-width: 760px; font-size: 14px; line-height: 1.6; }
+.note-index { list-style: none; margin: 10px 0 8px; padding: 0; font-size: 13px; }
+.note-index a { display: flex; gap: 14px; padding: 4px 0; color: var(--text-secondary); }
+.note-index a:hover { color: var(--text-primary); text-decoration: none; }
+.note { border-top: 1px solid var(--border); margin-top: 22px; padding-top: 18px; }
+.note-date { font-size: 11px; color: var(--text-muted); }
+h2.note-title { font-size: 17px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--text-primary); margin: 2px 0 12px; }
+.note h3 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.07em; color: var(--text-muted); margin: 22px 0 6px; }
+.note h4 { font-size: 13px; font-weight: 600; color: var(--text-primary); margin: 14px 0 4px; }
+.note p { margin: 0 0 12px; color: var(--text-secondary); }
+.note ul { margin: 0 0 12px; padding-left: 20px; color: var(--text-secondary); }
+.note li { margin-bottom: 4px; }
+.note b { color: var(--text-primary); }
+.note code { font: 12px var(--mono); background: var(--surface-2); padding: 1px 4px; border-radius: 3px; }
+.note blockquote { margin: 0 0 12px; padding: 2px 0 2px 14px; border-left: 1px solid var(--text-muted); color: var(--text-secondary); }
+
 /* ---- guide ---- */
 .guide { max-width: 760px; font-size: 14px; line-height: 1.6; }
 .guide h1 { margin-bottom: 14px; }
@@ -281,6 +305,7 @@ details.panel[open] > summary { margin-bottom: 0; }
 .chart-box { position: relative; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .chart { height: 260px; }
 .chart.tall { height: 340px; }
+.chart.short { height: 160px; }
 .legend { display: flex; gap: 14px; flex-wrap: wrap; margin: 0 0 8px; color: var(--text-secondary); font-size: 12px; }
 .legend .key { display: inline-flex; align-items: center; gap: 6px; }
 .legend .line { width: 14px; height: 2px; display: inline-block; }
