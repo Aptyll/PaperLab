@@ -32,6 +32,7 @@ for (const i of store.imported) {
 }
 // Same rules as last time: keep adding to that run. Different rules: start a new one.
 const runId = store.beginRun(runSettings(config, signals), Date.now());
+if (store.rejoined) console.log(`Joined a paper run that an earlier update had split in two. Copy saved first: ${store.backupPath}`);
 const scorer = config.ai.enabled ? await createClaudeScorer(config.ai) : disabledScorer;
 
 const app = new App({ store, provider, signals, config, scorer, runId });

@@ -209,7 +209,8 @@ function runDifferences(run) {
   if (t.takeProfitPct !== undefined && t.takeProfitPct !== n.takeProfitPct) out.push(`take profit at +${p(t.takeProfitPct)}`);
   if (t.timeLimitMin !== undefined && t.timeLimitMin !== n.timeLimitMin) out.push(`${t.timeLimitMin} min limit`);
   if (t.feeRate !== undefined && (t.feeRate !== n.feeRate || t.slippageRate !== n.slippageRate)) out.push(`costs ${p(t.feeRate)} fee + ${p(t.slippageRate)} slippage`);
-  if (a.universe === null && now.universe) out.push('no liquidity floor');
+  // null means "not recorded". Only the first version truly had no floor.
+  if (a.universe === null && a.engine === 1 && now.universe) out.push('no liquidity floor');
   else if (a.universe && a.universe.minLiquidityUsd !== now.universe.minLiquidityUsd) out.push(`coins with ${usd(a.universe.minLiquidityUsd)}+ liquidity`);
   for (const [id, params] of Object.entries(a.signals ?? {})) {
     const cur = now.signals?.[id];
@@ -507,7 +508,7 @@ async function scoreboardPage(view) {
     lines.push({ id: r.strategy, curve: r.twin.equityCurve, dashed: true });
   }
   const el = document.getElementById('balance');
-  if (el && el.offsetWidth) balanceChart(el, lines, res.startingBankrollUsd);
+  if (el) balanceChart(el, lines, res.startingBankrollUsd);
 }
 
 /** Recent buys and sells, newest first. @param {any[]} trades */
@@ -596,7 +597,7 @@ async function rulePage(view, id) {
     ${panel('rule-fires', `Every fire <span class="count">${events.length}</span>`, firesTable(events), false)}
   </div>`;
   const el = document.getElementById('balance');
-  if (el && el.offsetWidth) balanceChart(
+  if (el) balanceChart(
     el,
     [
       { id, curve: r.equityCurve, dashed: false },

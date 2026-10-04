@@ -332,7 +332,23 @@ test('upgrading mid-run from the previous version keeps the same run going', () 
   assert.equal(store.beginRun(runSettings(DEFAULTS, []), 5000), migrated.id, 'same rules: the run carries on');
   assert.equal(store.runs()[0].origin, 'live');
   assert.equal(store.runs().length, 1);
+
+  // What the previous update did by mistake: file the run away and start a new one.
+  store.db.prepare("UPDATE runs SET origin = 'migrated' WHERE id = ?").run(migrated.id);
+  const split = Number(
+    store.db
+      .prepare("INSERT INTO runs (started_at, origin, settings) VALUES (?, 'live', ?)")
+      .run(2000, JSON.stringify(runSettings(DEFAULTS, []))).lastInsertRowid,
+  );
+  store.db.prepare(`UPDATE trades SET run_id = ? WHERE id = 1`).run(split);
   store.close();
+  const healed = new Store(file);
+  assert.equal(healed.beginRun(runSettings(DEFAULTS, []), 9000), migrated.id, 'the split run is joined back');
+  assert.equal(healed.rejoined, true);
+  assert.ok(healed.backupPath && existsSync(healed.backupPath));
+  assert.equal(healed.runs().length, 1);
+  assert.equal(healed.trades({ runId: migrated.id }).length, 1, 'its trades come along');
+  healed.close();
 
   const changed = new Store(file);
   const other = { ...DEFAULTS, trade: { ...DEFAULTS.trade, stopLossPct: 0.1 } };

@@ -411,10 +411,13 @@ export class Store {
   /** @param {string} file  Path, or ":memory:". */
   constructor(file) {
     if (file !== ':memory:') mkdirSync(path.dirname(file), { recursive: true });
+    this.file = file;
     this.db = new DatabaseSync(file);
     this.db.exec('PRAGMA journal_mode = WAL');
     /** @type {string|null} Full copy taken before upgrading an older database, if one was. */
     this.backupPath = migrate(this.db, file);
+    /** Whether a run split by an earlier upgrade was joined back together on this start. */
+    this.rejoined = false;
     this.db.exec(RUNS_SCHEMA);
     this.db.exec(SCHEMA);
     this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; PRAGMA foreign_keys = ON;`);
@@ -499,6 +502,7 @@ export class Store {
    * @returns {number} Run id.
    */
   beginRun(settings, now) {
+    this.rejoinSplitRun(settings);
     const last = /** @type {any} */ (
       this.db.prepare("SELECT * FROM runs WHERE origin IN ('live', 'migrated') ORDER BY id DESC LIMIT 1").get()
     );
@@ -526,6 +530,46 @@ export class Store {
       .prepare("INSERT INTO runs (started_at, origin, settings, note) VALUES (?, 'live', ?, NULL)")
       .run(now, JSON.stringify(settings));
     return Number(r.lastInsertRowid);
+  }
+
+  /**
+   * Repair for one specific mistake: an upgrade (before this fix) filed a
+   * running paper test away as a "migrated" run and started a new run seconds
+   * later with the same rules. If the newest run is exactly that, fold it back
+   * into the run it split from, so the test reads as one continuous run.
+   * A full copy of the database is saved first.
+   * @param {RunSettings} settings
+   * @returns {boolean} Whether a split run was rejoined.
+   */
+  rejoinSplitRun(settings) {
+    const [live, prev] = /** @type {any[]} */ (this.db.prepare('SELECT * FROM runs ORDER BY id DESC LIMIT 2').all());
+    if (!live || !prev || live.origin !== 'live' || prev.origin !== 'migrated') return false;
+    /** @type {RunSettings} */
+    const old = JSON.parse(prev.settings);
+    /** @type {RunSettings} */
+    const cur = JSON.parse(live.settings);
+    if (old.engine !== cur.engine || !canContinue({ ...cur, trade: { ...cur.trade, ...old.trade } }, cur)) return false;
+    if (!canContinue(cur, settings)) return false;
+    const lastOld = Number(
+      one(this.db, `SELECT MAX(COALESCE(closed_at, opened_at, signal_at)) AS t FROM trades WHERE run_id = ${Number(prev.id)}`).t ?? 0,
+    );
+    if (Number(live.started_at) - lastOld > 30 * 60_000) return false; // a real pause between tests, not a split
+    if (this.file !== ':memory:') {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const backup = this.file.replace(/\.sqlite$/, '') + `.backup-before-rejoin-${stamp}.sqlite`;
+      this.db.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`);
+      this.backupPath = backup;
+    }
+    this.tx(() => {
+      this.db.prepare('UPDATE trades SET run_id = ? WHERE run_id = ?').run(prev.id, live.id);
+      this.db.prepare('UPDATE signal_events SET run_id = ? WHERE run_id = ?').run(prev.id, live.id);
+      this.db
+        .prepare("UPDATE runs SET origin = 'live', settings = ?, note = NULL WHERE id = ?")
+        .run(JSON.stringify({ ...cur, signals: { ...old.signals, ...cur.signals } }), prev.id);
+      this.db.prepare('DELETE FROM runs WHERE id = ?').run(live.id);
+    });
+    this.rejoined = true;
+    return true;
   }
 
   /**
