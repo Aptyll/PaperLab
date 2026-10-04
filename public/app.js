@@ -887,13 +887,15 @@ async function scoreboardPage(view) {
     <div class="first-screen">
       ${pastRunBanner()}
       ${rows.length ? `<div class="ticks">${portfolioTick(rows)}${rows.map(strategyTick).join('')}${runMark()}</div>` : '<div class="empty">No active strategies.</div>'}
-      <div class="chart-box fill">
-        <div class="chart" id="balance"></div>
-        ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
+      <div class="chart-row">
+        <div class="chart-box fill">
+          <div class="chart" id="balance"></div>
+          ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
+        </div>
+        ${coinSide(coins)}
       </div>
     </div>
     ${panel('trades', `Trades <span class="count">${openCount ? `${openCount} open` : ''}</span>`, tradesList(mine), false)}
-    ${panel('best-coins', `Best coins <span class="count">${coins.length}</span>`, coinTable(coins, 10))}
     ${calibrationBlock(res.calibration)}
   </div>`;
 
@@ -917,6 +919,38 @@ async function scoreboardPage(view) {
   balanceChart(el, lines, res.startingBankrollUsd, chartSpan(res));
 }
 
+/** Different coins can share a ticker; tell them apart by the end of their pool address. @param {any[]} coins */
+function coinNamer(coins) {
+  const seen = new Map();
+  for (const c of coins) seen.set(c.symbol.toLowerCase(), (seen.get(c.symbol.toLowerCase()) ?? 0) + 1);
+  return (/** @type {any} */ c) =>
+    `<b title="${esc(c.poolAddress)}">${esc(c.symbol)}</b>${seen.get(c.symbol.toLowerCase()) > 1 ? ` <span class="muted mono addr">…${esc(c.poolAddress.slice(-4))}</span>` : ''}`;
+}
+
+/**
+ * Best coins beside the chart: what the strategies are buying and how it's
+ * going, best first. Dots show which strategies bought it; the rest is on the Coins page.
+ * @param {any[]} coins
+ */
+function coinSide(coins) {
+  const name = coinNamer(coins);
+  const rows = coins
+    .slice(0, 30)
+    .map(
+      (c, i) => `<a class="side-row" href="#/coin/${encodeURIComponent(c.poolAddress)}" title="${c.trades} trade${c.trades === 1 ? '' : 's'}${c.closed ? `, ${c.wins} of ${c.closed} finished ones made money` : ''}${c.open ? `, ${c.open} open` : ''}. Profit counts open trades as if sold now, after costs.">
+        <span class="side-n">${i + 1}</span>
+        <span class="side-coin">${name(c)}<span class="holders">${c.strategies.map((/** @type {string} */ id) => dot(id)).join('')}</span></span>
+        <span class="side-open">${c.open ? `${c.open} open` : ''}</span>
+        <b class="side-pnl ${tone(Math.round(c.pnlUsd))}">${signedDollars(c.pnlUsd)}</b>
+      </a>`,
+    )
+    .join('');
+  return `<aside class="coin-side">
+    <div class="side-head"><span>Best coins</span><a href="#/coins">All ${coins.length} →</a></div>
+    <div class="side-list">${rows || '<div class="empty">No coins bought yet.</div>'}</div>
+  </aside>`;
+}
+
 /**
  * The coins the strategies bought, best first: profit from closed trades plus
  * what open ones would make if sold now.
@@ -924,11 +958,7 @@ async function scoreboardPage(view) {
  */
 function coinTable(coins, limit) {
   if (!coins.length) return `<div class="empty">No coins bought yet.</div>`;
-  // Different coins can share a ticker; tell them apart by the end of their pool address.
-  const seen = new Map();
-  for (const c of coins) seen.set(c.symbol.toLowerCase(), (seen.get(c.symbol.toLowerCase()) ?? 0) + 1);
-  const name = (/** @type {any} */ c) =>
-    `<b title="${esc(c.poolAddress)}">${esc(c.symbol)}</b>${seen.get(c.symbol.toLowerCase()) > 1 ? ` <span class="muted mono addr">…${esc(c.poolAddress.slice(-4))}</span>` : ''}`;
+  const name = coinNamer(coins);
   return `<table class="t compact coin-rank"><thead><tr>
       <th class="num">#</th><th>Coin</th><th class="num">Trades</th><th class="num" title="Closed trades that made money">Won</th><th class="num">Open</th>
       <th class="num" title="Closed profit plus open trades if sold now, after costs">Profit</th><th class="num">Last</th>
@@ -1203,7 +1233,7 @@ function guidePage(view) {
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>
     <p><b>Buys and sells.</b> The chart marks the latest buys (hollow ring) and sells (solid dot) on each strategy's line, with a faint dotted line from each sell back to its buy, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
-    <p><b>Best coins.</b> Below the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
+    <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
     <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not.</p>
     <h2 id="past-runs">Past runs</h2>
