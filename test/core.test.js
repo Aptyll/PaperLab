@@ -13,6 +13,8 @@ import { strategyResults, wilson, calibration, verdict, goLiveChecks } from '../
 import { Store } from '../src/db.js';
 import { DEFAULTS } from '../src/config.js';
 import { runSettings, canContinue } from '../src/engine/runs.js';
+import { resolveStrategies } from '../src/engine/strategies.js';
+import STRATEGY_DEFS from '../src/strategies.js';
 
 const fixture = JSON.parse(readFileSync(new URL('./fixtures/geckoterminal-trending.json', import.meta.url), 'utf8'));
 
@@ -161,6 +163,8 @@ function fakeProvider(now, pools, fail = () => false) {
 }
 
 const bsr = async () => (await loadSignals()).filter((s) => s.id === 'buyer-seller-ratio');
+/** Falcon only (the buyer/seller rule with default exits), traded with `config`'s rules. */
+const falcon = async (config = DEFAULTS) => resolveStrategies(STRATEGY_DEFS.slice(0, 1), await bsr(), config.trade);
 
 test('cycle: queue, fill next poll with a random twin, exit, cooldown', async () => {
   const store = new Store(':memory:');
@@ -172,7 +176,7 @@ test('cycle: queue, fill next poll with a random twin, exit, cooldown', async ()
     snap({ ts: now, poolAddress: 'P3', symbol: 'THIN', priceUsd: price, trendingRank: 3, liquidityUsd: 5_000 }),
     snap({ ts: now, poolAddress: 'P4', symbol: 'NOSELL', priceUsd: price, trendingRank: 4, sellsM5: 0 }),
   ];
-  const deps = { store, provider: fakeProvider(() => now, pools), signals: await bsr(), config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
+  const deps = { store, provider: fakeProvider(() => now, pools), strategies: await falcon(), config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
 
   const r1 = await runCycle(deps);
   assert.equal(r1.queued.length, 2);
@@ -216,7 +220,7 @@ test('cycle: a chased signal trade cancels its random twin too', async () => {
     snap({ ts: now, poolAddress: 'P1', priceUsd: price, buyersM5: 50, sellersM5: 5 }),
     snap({ ts: now, poolAddress: 'P2', priceUsd: 1, trendingRank: 2 }),
   ];
-  const deps = { store, provider: fakeProvider(() => now, pools), signals: await bsr(), config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
+  const deps = { store, provider: fakeProvider(() => now, pools), strategies: await falcon(), config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
   await runCycle(deps);
   now += 60_000;
   price = 1.2;
@@ -234,7 +238,7 @@ test('a failed fetch still closes trades past their time limit', async () => {
   let now = 0;
   let fail = false;
   const pools = () => [snap({ ts: now, poolAddress: 'P1', buyersM5: 50, sellersM5: 5 })];
-  const deps = { store, provider: fakeProvider(() => now, pools, () => fail), signals: await bsr(), config: DEFAULTS, now: () => now, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
+  const deps = { store, provider: fakeProvider(() => now, pools, () => fail), strategies: await falcon(), config: DEFAULTS, now: () => now, runId: store.beginRun(runSettings(DEFAULTS, []), 0) };
   await runCycle(deps);
   now += 60_000;
   await runCycle(deps); // fills
@@ -310,7 +314,8 @@ test('an older database is upgraded in place, backed up, and kept as a past run'
   again.close();
 });
 
-test('upgrading mid-run from the previous version keeps the same run going', () => {
+test('upgrading mid-run from the previous version keeps the same run going', async () => {
+  const f = await falcon();
   const dir = mkdtempSync(path.join(tmpdir(), 'paperlab-'));
   const file = path.join(dir, 'paper.sqlite');
   const db = new DatabaseSync(file);
@@ -329,7 +334,7 @@ test('upgrading mid-run from the previous version keeps the same run going', () 
 
   const store = new Store(file);
   const [migrated] = store.runs();
-  assert.equal(store.beginRun(runSettings(DEFAULTS, []), 5000), migrated.id, 'same rules: the run carries on');
+  assert.equal(store.beginRun(runSettings(DEFAULTS, f), 5000), migrated.id, 'same rules: the run carries on');
   assert.equal(store.runs()[0].origin, 'live');
   assert.equal(store.runs().length, 1);
 
@@ -338,14 +343,14 @@ test('upgrading mid-run from the previous version keeps the same run going', () 
   const split = Number(
     store.db
       .prepare("INSERT INTO runs (started_at, origin, settings) VALUES (?, 'live', ?)")
-      .run(2000, JSON.stringify(runSettings(DEFAULTS, []))).lastInsertRowid,
+      .run(2000, JSON.stringify(runSettings(DEFAULTS, f))).lastInsertRowid,
   );
   store.db.prepare(`UPDATE trades SET run_id = ? WHERE id = 1`).run(split);
   // An older set-aside file merged in on the same start sits between them.
   store.db.prepare("INSERT INTO runs (started_at, origin, settings) VALUES (1, 'imported', '{}')").run();
   store.close();
   const healed = new Store(file);
-  assert.equal(healed.beginRun(runSettings(DEFAULTS, []), 9000), migrated.id, 'the split run is joined back');
+  assert.equal(healed.beginRun(runSettings(DEFAULTS, f), 9000), migrated.id, 'the split run is joined back');
   assert.equal(healed.rejoined, true);
   assert.ok(healed.backupPath && existsSync(healed.backupPath));
   assert.equal(healed.runs().filter((r) => r.origin !== 'imported').length, 1);
@@ -354,7 +359,7 @@ test('upgrading mid-run from the previous version keeps the same run going', () 
 
   const changed = new Store(file);
   const other = { ...DEFAULTS, trade: { ...DEFAULTS.trade, stopLossPct: 0.1 } };
-  assert.notEqual(changed.beginRun(runSettings(other, []), 6000), migrated.id, 'changed rules still start a new run');
+  assert.notEqual(changed.beginRun(runSettings(other, await falcon(other)), 6000), migrated.id, 'changed rules still start a new run');
   changed.close();
 });
 
@@ -383,10 +388,15 @@ test('databases set aside by the previous version are merged in as past runs', (
 
 test('runs: same rules continue, changed rules or costs start a new run', () => {
   const base = runSettings(DEFAULTS, []);
-  const withSignal = { ...base, signals: { a: { x: 1 } } };
+  const a1 = { signal: 'a', params: { x: 1 }, exits: { stopLossPct: 0.2 } };
+  const withSignal = { ...base, strategies: { a: a1 } };
   assert.ok(canContinue(base, withSignal), 'adding a rule file keeps the run');
-  assert.ok(!canContinue(withSignal, { ...base, signals: { a: { x: 2 } } }), 'changing a rule setting starts a new run');
-  assert.ok(!canContinue(base, { ...base, trade: { ...base.trade, stopLossPct: 0.1 } }));
+  assert.ok(!canContinue(withSignal, { ...base, strategies: { a: { ...a1, params: { x: 2 } } } }), 'changing a rule setting starts a new run');
+  assert.ok(!canContinue(withSignal, { ...base, strategies: { a: { ...a1, exits: { stopLossPct: 0.1 } } } }), "changing a strategy's exits starts a new run");
+  assert.ok(canContinue(withSignal, { ...base, strategies: { a: a1, b: { ...a1, exits: { stopLossPct: 0.1 } } } }), 'a new code-name with other exits keeps the run');
+  const legacy = { ...base, strategies: undefined, signals: { a: { x: 1 } }, trade: { ...base.trade, stopLossPct: 0.2 } };
+  assert.ok(canContinue(legacy, { ...base, trade: legacy.trade, strategies: { a: { ...a1, exits: { ...a1.exits, sizeUsd: 50, takeProfitPct: 0.4, timeLimitMin: 60 } } } }), 'runs recorded before strategies existed carry on');
+  assert.ok(!canContinue(base, { ...base, trade: { ...base.trade, feeRate: 0.01 } }), 'changing shared costs starts a new run');
   assert.ok(!canContinue(base, { ...base, engine: base.engine + 1 }));
 });
 
@@ -397,21 +407,22 @@ test('a new run trades from fresh books while the old run finishes its open trad
     snap({ ts: now, poolAddress: 'P1', buyersM5: 50, sellersM5: 5 }),
     snap({ ts: now, poolAddress: 'P2', trendingRank: 2 }),
   ];
-  const signals = await bsr();
-  const oldRun = store.beginRun(runSettings(DEFAULTS, signals), 0);
-  const deps = { store, provider: fakeProvider(() => now, pools), signals, config: DEFAULTS, now: () => now, runId: oldRun };
+  const strategies = await falcon();
+  const oldRun = store.beginRun(runSettings(DEFAULTS, strategies), 0);
+  const deps = { store, provider: fakeProvider(() => now, pools), strategies, config: DEFAULTS, now: () => now, runId: oldRun };
   await runCycle(deps);
   now += 60_000;
   await runCycle(deps); // fills in the old run
 
   const config = { ...DEFAULTS, trade: { ...DEFAULTS.trade, stopLossPct: 0.1 } };
-  const newRun = store.beginRun(runSettings(config, signals), now);
+  const newStrategies = await falcon(config);
+  const newRun = store.beginRun(runSettings(config, newStrategies), now);
   assert.notEqual(newRun, oldRun);
   now += 60_000;
-  const r = await runCycle({ ...deps, config, runId: newRun });
+  const r = await runCycle({ ...deps, strategies: newStrategies, config, runId: newRun });
   assert.ok(r.queued.some((t) => t.strategy === 'buyer-seller-ratio' && t.runId === newRun), 'not blocked by the old run holding P1');
   now += 61 * 60_000;
-  const r2 = await runCycle({ ...deps, config, runId: newRun });
+  const r2 = await runCycle({ ...deps, strategies: newStrategies, config, runId: newRun });
   assert.ok(r2.closed.some((t) => t.runId === oldRun && t.exitReason === 'time_limit'), 'old trades close under their own rules');
   store.close();
 });
@@ -466,7 +477,7 @@ test('controls: only this page can turn live data on or off, or quit', async () 
   const store = new Store(':memory:');
   const config = { ...DEFAULTS, port: 0 };
   const provider = /** @type {any} */ ({ id: 'simulated', callsInLastMinute: () => 0, totalCalls: () => 0 });
-  const server = createServer({ store, config, signals: [], provider, app: /** @type {any} */ (app), aiEnabled: false, runId: 1, onQuit: () => quit++ });
+  const server = createServer({ store, config, signals: [], strategies: [], provider, app: /** @type {any} */ (app), aiEnabled: false, runId: 1, onQuit: () => quit++ });
   await new Promise((r) => server.listen(0, '127.0.0.1', () => r(null)));
   config.port = /** @type {import('node:net').AddressInfo} */ (server.address()).port;
   const base = `http://localhost:${config.port}`;
@@ -485,5 +496,49 @@ test('controls: only this page can turn live data on or off, or quit', async () 
   await new Promise((r) => setImmediate(r));
   assert.equal(quit, 1);
   server.close();
+  store.close();
+});
+
+test('the six strategies continue the run the original three were in', async () => {
+  const signals = await loadSignals();
+  const strategies = resolveStrategies(STRATEGY_DEFS, signals, DEFAULTS.trade);
+  assert.deepEqual(strategies.map((s) => s.codeName), ['Falcon', 'Badger', 'Cobra', 'Hawk', 'Otter', 'Viper']);
+  const store = new Store(':memory:');
+  // Settings exactly as the previous version recorded them: one entry per rule, shared exits.
+  const legacy = {
+    engine: 2,
+    startingBankrollUsd: DEFAULTS.startingBankrollUsd,
+    trade: { ...DEFAULTS.trade },
+    universe: { ...DEFAULTS.universe },
+    signals: Object.fromEntries(signals.map((s) => [s.id, { ...s.params }])),
+  };
+  const old = Number(
+    store.db.prepare("INSERT INTO runs (started_at, origin, settings) VALUES (1, 'live', ?)").run(JSON.stringify(legacy)).lastInsertRowid,
+  );
+  assert.equal(store.beginRun(runSettings(DEFAULTS, strategies), 2), old, 'adding Hawk, Otter and Viper keeps the run');
+  store.close();
+});
+
+test('each strategy trades with its own exits and its own random picker', async () => {
+  const store = new Store(':memory:');
+  let now = 0;
+  const pools = () => [
+    snap({ ts: now, poolAddress: 'P1', buyersM5: 50, sellersM5: 5 }),
+    snap({ ts: now, poolAddress: 'P2', trendingRank: 2 }),
+  ];
+  const strategies = resolveStrategies(
+    STRATEGY_DEFS.filter((d) => d.signal === 'buyer-seller-ratio'),
+    await bsr(),
+    DEFAULTS.trade,
+  );
+  const deps = { store, provider: fakeProvider(() => now, pools), strategies, config: DEFAULTS, now: () => now, rand: () => 0.99, runId: store.beginRun(runSettings(DEFAULTS, strategies), 0) };
+  const r = await runCycle(deps);
+  const hawk = r.queued.find((t) => t.strategy === 'hawk');
+  const hawkRandom = r.queued.find((t) => t.book === 'random:hawk');
+  assert.equal(hawk?.stopLossPct, 0.1);
+  assert.equal(hawk?.timeLimitMs, 20 * 60_000);
+  assert.equal(hawkRandom?.stopLossPct, 0.1, 'the random picker uses the same exits');
+  assert.equal(r.queued.find((t) => t.strategy === 'buyer-seller-ratio')?.stopLossPct, 0.2);
+  assert.equal(store.recentSignalEvents('hawk', 5, deps.runId).length, 1);
   store.close();
 });

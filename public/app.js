@@ -4,13 +4,15 @@
 // interpolated into HTML goes through esc().
 //
 // Pages (hash routes, so the browser Back button works):
-//   #/             Scoreboard: each rule vs its random twin
-//   #/rule/<id>    One rule: its trades, its twin's trades, why it fired
+//   #/             Scoreboard: each strategy vs its random picker
+//   #/rule/<id>    One strategy: its trades, its random picker's trades, why it fired
 //   #/coins        Trending coins
 //   #/coin/<pool>  One coin: price chart with every trade marked
+//   #/guide        How it all works, and past runs
 //
-// Runs: each set of trading rules is its own run. Pages show the current run;
-// the picker in the top bar switches to an earlier one (kept until reload).
+// A strategy is a code-name (Falcon, Hawk...) plus one rule and its exits.
+// The "Show" filter picks which strategies the home screen, its chart and the
+// portfolio number in the top bar cover.
 
 /** @type {any} */
 const LWC = /** @type {any} */ (window).LightweightCharts;
@@ -20,9 +22,11 @@ const css = (/** @type {string} */ v) => getComputedStyle(document.documentEleme
 
 const state = {
   /** @type {any} */ status: null,
+  /** @type {any} Results for the run being shown. */ results: null,
   /** @type {Record<string, string>} */ colors: {},
   /** @type {any[]} */ charts: [],
   /** @type {number|null} Past run being viewed; null means the current run. */ viewRun: null,
+  /** Which strategies to show. */ show: load('show') ?? 'active',
 };
 
 /** @param {string} k */
@@ -64,6 +68,9 @@ function money(n) {
   return `${n >= 0 ? '+' : '−'}$${Math.abs(n).toFixed(2)}`;
 }
 
+/** Whole dollars with thousands separators, e.g. $1,083. @param {number} n */
+const dollars = (n) => `${n < 0 ? '−' : ''}$${Math.round(Math.abs(n)).toLocaleString('en-US')}`;
+
 /** Memecoin prices span many orders of magnitude. @param {number|null|undefined} p */
 function price(p) {
   if (p === null || p === undefined || !Number.isFinite(p)) return '–';
@@ -78,6 +85,12 @@ function pct(x, digits = 1) {
   if (x === null || x === undefined || !Number.isFinite(x)) return '–';
   return `${x >= 0 ? '+' : '−'}${Math.abs(x * 100).toFixed(digits)}%`;
 }
+
+/** Round thousands, e.g. 100000 -> "$100K". @param {number} n */
+const kUsd = (n) => (n >= 1000 ? `$${+(n / 1000).toFixed(1)}K` : `$${n}`);
+
+/** A setting as a plain percent, e.g. 0.2 -> "20%". @param {number} x */
+const p100 = (x) => `${+(x * 100).toFixed(2)}%`;
 
 /** @param {number|null|undefined} x */
 const share = (x) => (x === null || x === undefined ? '–' : `${Math.round(x * 100)}%`);
@@ -99,12 +112,24 @@ const ago = (ms) => (ms ? duration(Date.now() - ms) : '–');
 /** @param {number|null|undefined} ms */
 const clock = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '–');
 
+/** Exits in a few characters, e.g. "−20% / +40% / 60 min". @param {any} t */
+const exitsText = (t) => `−${p100(t.stopLossPct)} / +${p100(t.takeProfitPct)} / ${t.timeLimitMin} min`;
+
+// ---------- strategies ----------
+
+/** @param {string} id @returns {any} */
+const strategyOf = (id) => state.status?.strategies.find((/** @type {any} */ s) => s.id === id) ?? null;
+/** Code-name, e.g. "Falcon". @param {string} id */
+const nameOf = (id) => strategyOf(id)?.codeName ?? id;
+/** Plain rule name, e.g. "Buy rush". @param {string} ruleId */
+const ruleName = (ruleId) => state.status?.signals.find((/** @type {any} */ s) => s.id === ruleId)?.name ?? ruleId;
+/** The strategy a trade belongs to (a random picker's trade belongs to its strategy). @param {any} t */
+const strategyOfTrade = (t) => (t.strategy === 'random' ? String(t.book).split(':')[1] ?? '' : t.strategy);
+/** Who placed a trade, in words. @param {any} t */
+const owner = (t) => (t.strategy === 'random' ? `${nameOf(strategyOfTrade(t))} random` : nameOf(t.strategy));
+
 /** @param {string} strategy */
 const colorOf = (strategy) => state.colors[strategy] ?? css('--baseline');
-/** @param {string} id */
-const ruleName = (id) => state.status?.signals.find((/** @type {any} */ s) => s.id === id)?.name ?? id;
-/** Who placed a trade, in words. @param {any} t */
-const owner = (t) => (t.strategy === 'random' ? `${ruleName(String(t.book).split(':')[1] ?? '')} twin` : ruleName(t.strategy));
 /** @param {string} id */
 const dot = (id) => `<span class="dot" style="background:${colorOf(id)}"></span>`;
 
@@ -121,6 +146,69 @@ async function getJson(url) {
   return r.json();
 }
 
+// ---------- status of one strategy ----------
+
+const NEED_TRADES = 30;
+
+/** Profit minus its random picker's profit, closed trades. @param {any} r */
+const edgeUsd = (r) => r.all.pnlUsd - r.twin.all.pnlUsd;
+
+/**
+ * One status instead of verdict, check pips and trade bar.
+ * @param {any} r
+ * @returns {{key: string, text: string, cls: string, fill: number, rank: number}}
+ */
+function statusOf(r) {
+  const checks = r.checks ?? [];
+  const passed = checks.filter((/** @type {any} */ c) => c.pass).length;
+  if (r.all.closed < NEED_TRADES) {
+    return { key: 'warming', text: `Warming up · ${r.all.closed}/${NEED_TRADES}`, cls: '', fill: r.all.closed / NEED_TRADES, rank: 3 };
+  }
+  if (checks.length && passed === checks.length) {
+    return r.verdict?.label === 'clear'
+      ? { key: 'ready', text: 'Ready', cls: 'pos', fill: 1, rank: 0 }
+      : { key: 'ready', text: 'Ready · could be luck', cls: 'warn', fill: 1, rank: 1 };
+  }
+  const fill = checks.length ? passed / checks.length : 0;
+  if (r.verdict?.label === 'no_edge') return { key: 'behind', text: 'Behind random', cls: 'neg', fill, rank: 4 };
+  return { key: 'not-ready', text: `Not ready · ${passed}/${checks.length} checks`, cls: '', fill, rank: 2 };
+}
+
+/** The six checks, for hover text. @param {any} r */
+const checksTip = (r) =>
+  ['Go-live checks', ...(r.checks ?? []).map((/** @type {any} */ x) => `${x.pass ? '✓' : '✗'} ${x.label} (${x.detail})`)].join('\n');
+
+// ---------- the Show filter ----------
+
+/** Filter choices: fixed views, then one per rule. */
+function showOptions() {
+  const rules = [...new Set((state.status?.strategies ?? []).map((/** @type {any} */ s) => s.rule))];
+  return [
+    { value: 'active', label: 'Active' },
+    { value: 'ahead', label: 'Ahead of random' },
+    { value: 'ready', label: 'Ready' },
+    { value: 'retired', label: 'Retired' },
+    { value: 'all', label: 'All' },
+    ...rules.map((id) => ({ value: `rule:${id}`, label: ruleName(String(id)) })),
+  ];
+}
+
+/** Results of the strategies the filter shows, best status first. @param {any[]} rows */
+function shownStrategies(rows) {
+  const f = state.show;
+  const retired = (/** @type {any} */ r) => strategyOf(r.strategy)?.retired ?? false;
+  const keep = rows.filter((r) => {
+    if (r.strategy === 'random') return false;
+    if (f === 'all') return true;
+    if (f === 'retired') return retired(r);
+    if (f === 'ahead') return edgeUsd(r) > 0;
+    if (f === 'ready') return statusOf(r).key === 'ready';
+    if (f.startsWith('rule:')) return strategyOf(r.strategy)?.rule === f.slice(5);
+    return !retired(r);
+  });
+  return keep.sort((a, b) => statusOf(a).rank - statusOf(b).rank || edgeUsd(b) - edgeUsd(a));
+}
+
 // ---------- top bar ----------
 
 function renderTopbar() {
@@ -128,31 +216,53 @@ function renderTopbar() {
   const lastOk = s.recentPolls.find((/** @type {any} */ p) => p.ok)?.ts ?? null;
   const ageSec = lastOk ? Math.round((Date.now() - lastOk) / 1000) : null;
   const healthy = ageSec !== null && ageSec < 180;
-  const when = ageSec === null ? 'waiting' : ageSec < 120 ? `${ageSec}s` : `${Math.round(ageSec / 60)}m`;
-  const tip = [
-    `${s.demo ? 'Demo' : 'Live'} data, last price update ${ageSec === null ? 'not yet' : `${when} ago`}.`,
-    healthy ? `Prices refresh every ${s.pollIntervalSec}s.` : 'No fresh prices for 3+ minutes. New trades pause until data comes back.',
-    s.ai.enabled ? `AI scoring on (${s.ai.model}).` : '',
-  ].join(' ');
-  const el = /** @type {HTMLElement} */ (document.getElementById('health'));
-  el.title = tip;
+  const when = ageSec === null ? 'not yet' : ageSec < 120 ? `${ageSec}s ago` : `${Math.round(ageSec / 60)}m ago`;
   const failed = s.lastCycle && !s.lastCycle.ok;
-  const ctl = /** @type {HTMLElement} */ (document.getElementById('live-ctl'));
+  const btn = /** @type {HTMLElement} */ (document.getElementById('health'));
+  const light = /** @type {HTMLElement} */ (btn.querySelector('.health'));
   if (!s.live) {
     // Off until asked: the desktop icon starts Paper Lab with live data off.
-    ctl.innerHTML = `<button type="button" class="btn-live" data-live="on">Turn On Live Data</button>`;
-    el.title = 'Live data is off. Nothing is fetched or traded until you turn it on.';
-    el.innerHTML = `${s.demo ? '<span class="badge-demo">DEMO</span>' : ''}<span class="health off"></span><span class="muted">off</span>`;
+    btn.title = 'Live data is off. Nothing is fetched or traded until you turn it on.';
+    light.className = 'health off';
   } else {
-    ctl.innerHTML = `<button type="button" class="btn-ghost" data-live="off" title="Stop fetching prices and making paper trades">Turn off</button>`;
-    el.innerHTML = `${s.demo ? '<span class="badge-demo">DEMO</span>' : ''}<span class="health ${healthy && !failed ? 'ok' : 'bad'}"></span><span class="${healthy ? 'muted' : 'neg'}">${when}</span>`;
+    btn.title = [
+      `${s.demo ? 'Demo' : 'Live'} data, last price update ${when}.`,
+      healthy ? `Prices refresh every ${s.pollIntervalSec}s.` : 'No fresh prices for 3+ minutes. New trades pause until data comes back.',
+      s.ai.enabled ? `AI scoring on (${s.ai.model}).` : '',
+    ].join(' ');
+    light.className = `health ${healthy && !failed ? 'ok' : 'bad'}`;
   }
-  renderRunPicker();
-  for (const a of document.querySelectorAll('.nav a')) {
-    const r = route();
-    const active = a.getAttribute('data-nav') === (r.page === 'coins' || r.page === 'coin' ? 'coins' : 'home');
-    a.classList.toggle('active', active);
+  renderMenu();
+  renderPortfolio();
+  const r = route();
+  const here = r.page === 'coins' || r.page === 'coin' ? 'coins' : r.page === 'guide' ? 'guide' : 'home';
+  for (const a of document.querySelectorAll('.nav a')) a.classList.toggle('active', a.getAttribute('data-nav') === here);
+}
+
+function renderMenu() {
+  const m = /** @type {HTMLElement} */ (document.getElementById('menu'));
+  const live = state.status.live;
+  m.innerHTML = `<button type="button" role="menuitem" data-live="${live ? 'off' : 'on'}">${live ? 'Turn off live data' : 'Turn on live data'}</button>
+    <button type="button" role="menuitem" data-quit>Quit Paper Lab</button>`;
+}
+
+/** Pretend $1,000 split across the strategies on screen: the average of their balances. */
+function renderPortfolio() {
+  const el = /** @type {HTMLElement} */ (document.getElementById('portfolio'));
+  const rows = state.results ? shownStrategies(state.results.strategies) : [];
+  if (!rows.length) {
+    el.textContent = '';
+    el.title = '';
+    return;
   }
+  const start = state.results.startingBankrollUsd;
+  const avg = rows.reduce((a, r) => a + r.equityUsd, 0) / rows.length;
+  el.textContent = dollars(avg);
+  el.className = `portfolio ${avg > start + 0.5 ? 'pos' : avg < start - 0.5 ? 'neg' : ''}`;
+  el.title = [
+    `Average balance of the ${rows.length} strateg${rows.length === 1 ? 'y' : 'ies'} shown, including open trades${state.viewRun === null ? '' : ' (past run)'}:`,
+    ...rows.map((r) => `${nameOf(r.strategy)}  ${dollars(r.equityUsd)}`),
+  ].join('\n');
 }
 
 // ---------- runs ----------
@@ -172,24 +282,10 @@ function shownRun() {
   return runs.find((r) => r.id === id) ?? null;
 }
 
-function renderRunPicker() {
-  const el = /** @type {HTMLSelectElement} */ (document.getElementById('run-pick'));
-  const runs = runsInOrder();
-  el.hidden = runs.length < 2;
-  if (el.hidden) return;
-  const current = state.status.runId;
-  el.innerHTML = runs
-    .slice()
-    .reverse()
-    .map((r) => {
-      const label =
-        r.id === current
-          ? `Run ${r.n} · now`
-          : `Run ${r.n} · ${dayTime(r.startedAt)} · ${r.trades} trade${r.trades === 1 ? '' : 's'}`;
-      return `<option value="${r.id}">${esc(label)}</option>`;
-    })
-    .join('');
-  el.value = String(state.viewRun ?? current);
+/** Per-strategy settings of a run, also for runs recorded before strategies existed. @param {any} settings */
+function runStrategies(settings) {
+  if (settings.strategies) return settings.strategies;
+  return Object.fromEntries(Object.entries(settings.signals ?? {}).map(([id, params]) => [id, { signal: id, params, exits: settings.trade ?? {} }]));
 }
 
 /** What a past run did differently from the current one, in words. @param {any} run */
@@ -203,18 +299,18 @@ function runDifferences(run) {
   else if (a.engine !== now.engine) out.push('older trade simulation');
   const t = a.trade ?? {};
   const n = now.trade;
-  const p = (/** @type {number} */ x) => `${+(x * 100).toFixed(2)}%`;
   if (t.sizeUsd !== undefined && t.sizeUsd !== n.sizeUsd) out.push(`$${t.sizeUsd} per trade`);
-  if (t.stopLossPct !== undefined && t.stopLossPct !== n.stopLossPct) out.push(`stop at −${p(t.stopLossPct)}`);
-  if (t.takeProfitPct !== undefined && t.takeProfitPct !== n.takeProfitPct) out.push(`take profit at +${p(t.takeProfitPct)}`);
+  if (t.stopLossPct !== undefined && t.stopLossPct !== n.stopLossPct) out.push(`stop at −${p100(t.stopLossPct)}`);
+  if (t.takeProfitPct !== undefined && t.takeProfitPct !== n.takeProfitPct) out.push(`take profit at +${p100(t.takeProfitPct)}`);
   if (t.timeLimitMin !== undefined && t.timeLimitMin !== n.timeLimitMin) out.push(`${t.timeLimitMin} min limit`);
-  if (t.feeRate !== undefined && (t.feeRate !== n.feeRate || t.slippageRate !== n.slippageRate)) out.push(`costs ${p(t.feeRate)} fee + ${p(t.slippageRate)} slippage`);
+  if (t.feeRate !== undefined && (t.feeRate !== n.feeRate || t.slippageRate !== n.slippageRate)) out.push(`costs ${p100(t.feeRate)} fee + ${p100(t.slippageRate)} slippage`);
   // null means "not recorded". Only the first version truly had no floor.
   if (a.universe === null && a.engine === 1 && now.universe) out.push('no liquidity floor');
   else if (a.universe && a.universe.minLiquidityUsd !== now.universe.minLiquidityUsd) out.push(`coins with ${usd(a.universe.minLiquidityUsd)}+ liquidity`);
-  for (const [id, params] of Object.entries(a.signals ?? {})) {
-    const cur = now.signals?.[id];
-    if (cur && JSON.stringify(cur) !== JSON.stringify(params)) out.push(`different ${ruleName(id)} settings`);
+  const was = runStrategies(a);
+  const is = runStrategies(now);
+  for (const [id, st] of Object.entries(was)) {
+    if (is[id] && JSON.stringify(is[id].params) !== JSON.stringify(st.params)) out.push(`different ${nameOf(id)} settings`);
   }
   return out;
 }
@@ -232,13 +328,19 @@ function pastRunBanner() {
   </div>`;
 }
 
-/** Trade rules for the run being shown, falling back to today's for anything not recorded. */
-function shownRules() {
+/** Exits a strategy used in the run being shown. @param {string} id */
+function shownExits(id) {
   const run = shownRun();
-  return {
-    trade: { ...state.status.trade, ...(run?.settings.trade ?? {}) },
-    universe: run ? run.settings.universe : state.status.universe,
-  };
+  const rec = run ? runStrategies(run.settings)[id] : null;
+  return { ...state.status.trade, ...(strategyOf(id)?.trade ?? {}), ...(rec?.exits ?? {}) };
+}
+
+/** Switch to a run (null = now) and show its scoreboard. @param {number|null} id */
+function openRun(id) {
+  state.viewRun = id === state.status.runId ? null : id;
+  state.results = null;
+  if (route().page === 'home') void refresh();
+  else location.hash = '#/';
 }
 
 // ---------- charts ----------
@@ -248,7 +350,7 @@ function destroyCharts() {
   state.charts = [];
 }
 
-/** @param {HTMLElement} el */
+/** @param {HTMLElement} el @param {(v: any) => string} [priceFormatter] */
 function baseChart(el, priceFormatter = price) {
   const chart = LWC.createChart(el, {
     autoSize: true,
@@ -282,14 +384,29 @@ function toSeries(pts) {
 }
 
 /**
- * Balance over time: each rule solid, its twin dashed in the same color.
+ * The average of several balance curves: at each close, every book's latest
+ * balance (the start for a book with nothing closed yet), averaged.
+ * @param {any[][]} curves  each [{t, equity}], oldest first
+ * @param {number} start
+ */
+function averageCurve(curves, start) {
+  const events = curves.flatMap((c, i) => c.map((p) => ({ t: p.t, i, v: p.equity }))).sort((a, b) => a.t - b.t);
+  const now = curves.map(() => start);
+  return events.map((e) => {
+    now[e.i] = e.v;
+    return { t: e.t, equity: now.reduce((a, b) => a + b, 0) / now.length };
+  });
+}
+
+/**
+ * Balance over time, one line per book.
  * @param {HTMLElement} el
- * @param {{id: string, curve: any[], dashed: boolean}[]} lines
+ * @param {{color: string, curve: any[], dashed: boolean}[]} lines
  * @param {number} start
  */
 function balanceChart(el, lines, start) {
   if (!lines.some((l) => l.curve.length)) {
-    el.innerHTML = `<div class="empty" style="padding:18px">No closed trades yet.</div>`;
+    el.innerHTML = `<div class="empty chart-empty">No closed trades yet.</div>`;
     return;
   }
   const fmt = (/** @type {number} */ v) => `$${v.toFixed(0)}`;
@@ -297,7 +414,7 @@ function balanceChart(el, lines, start) {
   for (const l of lines) {
     if (!l.curve.length) continue;
     const series = chart.addSeries(LWC.LineSeries, {
-      color: colorOf(l.id),
+      color: l.color,
       lineWidth: 2,
       lineStyle: l.dashed ? 2 : 0,
       priceLineVisible: false,
@@ -307,6 +424,14 @@ function balanceChart(el, lines, start) {
     series.setData(toSeries([{ t: l.curve[0].t - 1000, v: start }, ...l.curve.map((p) => ({ t: p.t, v: p.equity }))]));
   }
   chart.timeScale().fitContent();
+}
+
+/** The home chart fills the rest of the window, leaving room for the folded Trades panel below it. */
+function fitHomeChart() {
+  const el = /** @type {HTMLElement|null} */ (document.querySelector('.chart.fill'));
+  if (!el) return;
+  const top = el.getBoundingClientRect().top + /** @type {HTMLElement} */ (document.getElementById('view')).scrollTop;
+  el.style.height = `${Math.max(280, Math.round(window.innerHeight - top - 64))}px`;
 }
 
 /**
@@ -327,7 +452,7 @@ function priceChart(el, snapshots, trades) {
   const markers = [];
   for (const t of trades) {
     if (!t.openedAt) continue;
-    const color = colorOf(t.strategy);
+    const color = t.strategy === 'random' ? css('--baseline') : colorOf(t.strategy);
     const open = Math.floor(t.openedAt / 1000);
     if (open >= first) markers.push({ time: open, position: 'belowBar', shape: 'arrowUp', color, size: 1 });
     if (t.closedAt) markers.push({ time: Math.floor(t.closedAt / 1000), position: 'aboveBar', shape: 'arrowDown', color, size: 1, text: pct(t.pnlPct, 0) });
@@ -344,79 +469,51 @@ function priceChart(el, snapshots, trades) {
 
 // ---------- shared pieces ----------
 
-const VERDICT_TEXT = /** @type {Record<string, string>} */ ({
-  too_early: 'Too early',
-  no_edge: 'No edge',
-  leaning: 'Leaning',
-  clear: 'Clear',
-});
+// The HUD reads top to bottom by importance: how far each strategy is ahead
+// of random (largest, brightest), one status with a thin bar, then everything
+// else, quieter or folded away. Explanations live on the Guide page.
 
-// The HUD reads top to bottom by importance: how far each rule is ahead of
-// random (largest, brightest), the six go-live checks (pips), progress toward
-// enough trades (thin bar), then everything else, quieter or folded away.
-
-/** Profit minus its random twin's profit, closed trades. @param {any} r */
-const edgeUsd = (r) => r.all.pnlUsd - r.twin.all.pnlUsd;
-
-/** Verdict word, only once there are enough trades for it to mean something. @param {any} r */
-function verdictTag(r) {
-  const v = r.verdict;
-  if (!v || v.label === 'too_early') return '';
-  return `<span class="tag ${v.label}" title="${esc(v.detail)}">${VERDICT_TEXT[v.label]}</span>`;
-}
-
-/** The six go-live checks as pips; hover lists them. @param {any} r */
-function pips(r) {
-  const c = r.checks ?? [];
-  const passed = c.filter((/** @type {any} */ x) => x.pass).length;
-  const tip = ['Go-live checks', ...c.map((/** @type {any} */ x) => `${x.pass ? '✓' : '✗'} ${x.label} (${x.detail})`)].join('\n');
-  return `<span class="pips" title="${esc(tip)}">${c.map((/** @type {any} */ x) => `<i class="${x.pass ? 'on' : ''}"></i>`).join('')}<b>${passed}/${c.length}</b></span>`;
-}
-
-/** Progress toward the closed trades a verdict needs, like an XP bar. @param {any} r */
-function xpBar(r) {
-  const need = 30;
-  const p = Math.min(1, r.all.closed / need);
-  return `<div class="xp ${p >= 1 ? 'full' : ''}" title="${r.all.closed} of ${need} closed trades"><span style="width:${(p * 100).toFixed(1)}%"></span></div>`;
-}
-
-/** Big number: how far ahead of random. @param {any} r */
-function heroNumber(r) {
+/** Big number: how far ahead of random. Whole dollars on cards, cents on the strategy page. @param {any} r */
+function heroNumber(r, cents = false) {
   const e = edgeUsd(r);
   const none = r.all.closed === 0 && r.twin.all.closed === 0;
-  return `<div class="hero ${none ? 'muted' : tone(e)}" title="Profit minus its random twin's profit (closed trades)">${none ? '$0' : money(e)}<span class="hero-unit">vs random</span></div>`;
+  const shown = cents ? Math.round(e * 100) / 100 : Math.round(e);
+  const n = shown === 0 ? '$0' : cents ? money(e) : `${e > 0 ? '+' : '−'}${dollars(Math.abs(e))}`;
+  return `<div class="hero ${none ? 'muted' : tone(shown)}" title="Profit minus its random picker's profit (closed trades): ${money(e)}">${none ? '$0' : n}<span class="hero-unit">vs random</span></div>`;
 }
 
-/** @param {any} r @param {boolean} lead */
-function ruleCard(r, lead) {
-  const open = r.open + r.pending;
-  const bits = [r.all.closed ? `${share(r.all.winRate)} win` : '', `${r.all.closed} closed`, open ? `${open} open` : ''].filter(Boolean);
-  return `<a class="card ${lead ? 'lead' : ''}" href="#/rule/${esc(r.strategy)}" style="--c:${colorOf(r.strategy)}">
-    <div class="card-top"><span class="rule-name">${dot(r.strategy)}${esc(ruleName(r.strategy))}</span>${verdictTag(r)}</div>
+/** Status line and its bar. @param {any} r */
+function statusLine(r) {
+  const st = statusOf(r);
+  return `<div class="status ${st.cls}" title="${esc(checksTip(r))}">${esc(st.text)}</div>
+    <div class="bar ${st.cls}"><span style="width:${(Math.min(1, st.fill) * 100).toFixed(1)}%"></span></div>`;
+}
+
+/** @param {any} r */
+function strategyCard(r) {
+  const s = strategyOf(r.strategy);
+  return `<a class="card" href="#/rule/${esc(r.strategy)}" style="--c:${colorOf(r.strategy)}">
+    <div class="card-name">${dot(r.strategy)}<b>${esc(nameOf(r.strategy))}</b></div>
+    <div class="card-rule">${esc(s ? ruleName(s.rule) : '')}</div>
     ${heroNumber(r)}
-    <div class="card-row">${pips(r)}<span class="card-sub">${bits.join(' · ')}</span></div>
-    ${xpBar(r)}
+    ${statusLine(r)}
   </a>`;
-}
-
-/** The rule closest to going live: most checks passed, then furthest ahead. @param {any[]} rules */
-function leaderOf(rules) {
-  const score = (/** @type {any} */ r) => (r.checks ?? []).filter((/** @type {any} */ c) => c.pass).length * 1e6 + edgeUsd(r);
-  const withTrades = rules.filter((r) => r.all.closed > 0);
-  return withTrades.length ? withTrades.reduce((a, b) => (score(b) > score(a) ? b : a)).strategy : null;
 }
 
 const hm = (/** @type {number} */ ms) => `${Math.floor(ms / 3600_000)}:${String(Math.floor(ms / 60_000) % 60).padStart(2, '0')}`;
 
 /** Paper-run clock toward the 3 hours the go-live rules ask for. @param {any} c */
 function clockBar(c) {
-  const { trade: t, universe } = shownRules();
   const p = Math.min(1, c.activeMs / c.targetMs);
-  const tip = [
-    `Paper run time: ${hm(c.activeMs)} of ${hm(c.targetMs)}. Stops longer than 5 minutes don't count. Changing a setting starts a new run.`,
-    `Every rule and its random twin: $${t.sizeUsd} trades, sell at −${+(t.stopLossPct * 100).toFixed(2)}% or +${+(t.takeProfitPct * 100).toFixed(2)}% or after ${t.timeLimitMin} min${universe ? `, coins with $${Math.round(universe.minLiquidityUsd / 1000)}K+ liquidity` : ''}.`,
-  ].join('\n');
+  const tip = `Paper run time: ${hm(c.activeMs)} of ${hm(c.targetMs)}. Stops longer than 5 minutes don't count.`;
   return `<div class="clock ${p >= 1 ? 'done' : ''}" title="${esc(tip)}"><span class="clock-t">${hm(c.activeMs)}<span class="muted"> / ${hm(c.targetMs)}</span></span><div class="clock-bar"><span style="width:${(p * 100).toFixed(1)}%"></span></div></div>`;
+}
+
+/** The Show filter. */
+function showPicker() {
+  return `<label class="show">Show <select id="show-pick">${showOptions()
+    .map((o) => `<option value="${esc(o.value)}" ${o.value === state.show ? 'selected' : ''}>${esc(o.label)}</option>`)
+    .join('')}</select></label>`;
 }
 
 /**
@@ -429,27 +526,12 @@ function panel(key, title, body, openByDefault = true) {
   return `<details class="panel" data-panel="${esc(key)}" data-open="${open ? 1 : 0}" ${open ? 'open' : ''}><summary>${title}</summary><div class="panel-body">${body}</div></details>`;
 }
 
-/** Open positions, best first. @param {any[]} trades */
-function positions(trades) {
-  const open = trades.filter((t) => t.status === 'open' || t.status === 'pending').sort((a, b) => (b.markPct ?? -1e9) - (a.markPct ?? -1e9));
-  if (!open.length) return `<div class="empty">Nothing open.</div>`;
-  return `<table class="t compact pos-list"><tbody>${open
-    .map(
-      (t) => `<tr class="link" data-href="#/coin/${encodeURIComponent(t.poolAddress)}">
-        <td><span class="rule-name">${dot(t.strategy === 'random' ? String(t.book).split(':')[1] : t.strategy)}<b>${esc(t.symbol)}</b></span></td>
-        <td class="num big ${tone(t.markPct)}">${t.status === 'pending' ? '<span class="muted">buying</span>' : pct(t.markPct)}</td>
-        <td class="num muted">${t.openedAt ? duration(Date.now() - t.openedAt) : ''}</td>
-      </tr>`,
-    )
-    .join('')}</tbody></table>`;
-}
-
 /** One-line plain explanation of how a trade ended (or where it stands). @param {any} t */
 function outcome(t) {
   if (t.status === 'pending') return '<span class="secondary">buying at next price check</span>';
   if (t.status === 'cancelled') {
     return `<span class="muted">skipped: ${esc(
-      { chased: 'price jumped 5%+ before it could buy', no_data: 'no fresh price to buy at', twin_cancelled: 'its rule skipped too' }[
+      { chased: 'price jumped 5%+ before it could buy', no_data: 'no fresh price to buy at', twin_cancelled: 'its strategy skipped too' }[
         /** @type {'chased'|'no_data'|'twin_cancelled'} */ (t.cancelReason)
       ] ?? t.cancelReason,
     )}</span>`;
@@ -479,56 +561,64 @@ function tradeRows(trades, opts = {}) {
     .join('')}</tbody></table>`;
 }
 
+
 // ---------- pages ----------
 
 /** @param {HTMLElement} view */
 async function scoreboardPage(view) {
-  const [res, trades] = await Promise.all([getJson(forRun('/api/results')), getJson(forRun('/api/trades?limit=300'))]);
-  const rules = res.strategies.filter((/** @type {any} */ r) => r.strategy !== 'random');
-  const lead = leaderOf(rules);
-  const mine = trades.filter((/** @type {any} */ t) => t.strategy !== 'random');
+  const res = state.results;
+  const trades = await getJson(forRun('/api/trades?limit=300'));
+  const rows = shownStrategies(res.strategies);
+  const ids = new Set(rows.map((r) => r.strategy));
+  const mine = trades.filter((/** @type {any} */ t) => t.strategy !== 'random' && ids.has(t.strategy));
   const openCount = mine.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending').length;
+  const offNow = !state.status.live && state.viewRun === null;
 
-  view.innerHTML = `<div class="page">
+  view.innerHTML = `<div class="page wide">
     ${pastRunBanner()}
-    ${clockBar(res.clock)}
-    <div class="cards">${rules.map((/** @type {any} */ r) => ruleCard(r, r.strategy === lead)).join('')}</div>
-    ${panel('balance', `Balance <span class="key-dash" title="Dashed lines are each rule's random twin"></span>`, '<div class="chart-box"><div class="chart" id="balance"></div></div>')}
-    <div class="split">
-      ${panel('positions', `Open <span class="count">${openCount}</span>`, positions(mine))}
-      ${panel('activity', 'Activity', feed(mine), false)}
-    </div>
+    <div class="clock-row">${clockBar(res.clock)}${showPicker()}</div>
+    ${rows.length ? `<div class="cards">${rows.map(strategyCard).join('')}</div>` : '<div class="empty">No strategies match this filter.</div>'}
+    ${panel('balance', '', `<div class="chart-box">
+      <div class="chart fill" id="balance"></div>
+      ${offNow ? '<div class="overlay"><button type="button" class="btn-live big" data-live="on">Turn On Live Data</button></div>' : ''}
+    </div>`)}
+    ${panel('trades', `Trades <span class="count">${openCount ? `${openCount} open` : ''}</span>`, tradesList(mine), false)}
     ${calibrationBlock(res.calibration)}
   </div>`;
 
-  /** @type {{id: string, curve: any[], dashed: boolean}[]} */
-  const lines = [];
-  for (const r of rules) {
-    lines.push({ id: r.strategy, curve: r.equityCurve, dashed: false });
-    lines.push({ id: r.strategy, curve: r.twin.equityCurve, dashed: true });
-  }
   const el = document.getElementById('balance');
-  if (el) balanceChart(el, lines, res.startingBankrollUsd);
+  if (!el) return;
+  fitHomeChart();
+  /** @type {{color: string, curve: any[], dashed: boolean}[]} */
+  const lines = rows.map((r) => ({ color: colorOf(r.strategy), curve: r.equityCurve, dashed: false }));
+  const randoms = rows.map((r) => r.twin.equityCurve);
+  if (randoms.some((c) => c.length)) lines.push({ color: css('--baseline'), curve: averageCurve(randoms, res.startingBankrollUsd), dashed: true });
+  balanceChart(el, lines, res.startingBankrollUsd);
 }
 
-/** Recent buys and sells, newest first. @param {any[]} trades */
-function feed(trades) {
-  /** @type {{t: number, html: string}[]} */
-  const items = [];
-  for (const t of trades) {
-    const who = `<span class="rule-name">${dot(t.strategy === 'random' ? String(t.book).split(':')[1] : t.strategy)}${esc(owner(t))}</span>`;
-    const coin = `<b>${esc(t.symbol)}</b>`;
-    if (t.openedAt) items.push({ t: t.openedAt, html: `<td class="kind pos">BUY</td><td>${coin} <span class="muted">·</span> ${who}</td>` });
-    if (t.status === 'closed') {
-      items.push({ t: t.closedAt, html: `<td class="kind neg">SELL</td><td>${coin} ${outcome(t)}<br><span class="muted">${esc(owner(t))}</span></td>` });
-    }
-  }
-  items.sort((a, b) => b.t - a.t);
-  if (!items.length) return `<div class="empty">Waiting for the first trade.</div>`;
-  return `<table class="feed" style="width:100%;border-collapse:collapse"><tbody>${items
-    .slice(0, 14)
-    .map((i) => `<tr><td class="when">${clock(i.t)}</td>${i.html}</tr>`)
-    .join('')}</tbody></table>`;
+/** Open trades first, best first, then the last 10 closed. Each trade once. @param {any[]} trades */
+function tradesList(trades) {
+  const open = trades.filter((t) => t.status === 'open' || t.status === 'pending').sort((a, b) => (b.markPct ?? -1e9) - (a.markPct ?? -1e9));
+  const closed = trades.filter((t) => t.status === 'closed').sort((a, b) => b.closedAt - a.closedAt).slice(0, 10);
+  if (!open.length && !closed.length) return `<div class="empty">Waiting for the first trade.</div>`;
+  const row = (/** @type {any} */ t, /** @type {string} */ right) => `<tr class="link" data-href="#/coin/${encodeURIComponent(t.poolAddress)}">
+      <td><span class="rule-name">${dot(t.strategy)}<b>${esc(t.symbol)}</b><span class="muted">${esc(nameOf(t.strategy))}</span></span></td>
+      ${right}
+    </tr>`;
+  return `<table class="t compact trades"><tbody>
+    ${open
+      .map((t) =>
+        row(
+          t,
+          `<td class="num big ${tone(t.markPct)}">${t.status === 'pending' ? '<span class="muted">buying</span>' : pct(t.markPct)}</td><td class="num muted">${t.openedAt ? `open ${duration(Date.now() - t.openedAt)}` : ''}</td>`,
+        ),
+      )
+      .join('')}
+    ${closed.length && open.length ? '<tr class="gap"><td colspan="3"></td></tr>' : ''}
+    ${closed
+      .map((t) => row(t, `<td class="num ${tone(t.pnlUsd)}">${pct(t.pnlPct)} ${money(t.pnlUsd)}</td><td class="num muted">${clock(t.closedAt)}</td>`))
+      .join('')}
+  </tbody></table>`;
 }
 
 /** @param {any} cal */
@@ -544,30 +634,37 @@ function calibrationBlock(cal) {
       .join('')}</tbody></table>`;
 }
 
+const VERDICT_TEXT = /** @type {Record<string, string>} */ ({
+  too_early: 'Too early to tell',
+  no_edge: 'Not ahead of random',
+  leaning: 'Ahead, but could be luck',
+  clear: 'Ahead by more than luck',
+});
+
 /** @param {HTMLElement} view @param {string} id */
 async function rulePage(view, id) {
-  const [{ trades, twinTrades, events }, res] = await Promise.all([
-    getJson(forRun(`/api/strategies/${encodeURIComponent(id)}`)),
-    getJson(forRun('/api/results')),
-  ]);
+  const { trades, twinTrades, events } = await getJson(forRun(`/api/strategies/${encodeURIComponent(id)}`));
+  const res = state.results;
   const r = res.strategies.find((/** @type {any} */ x) => x.strategy === id);
   if (!r) {
-    view.innerHTML = `<div class="page">${pastRunBanner()}<a class="back" href="#/">← Scoreboard</a><div class="empty">This rule has no trades in this run.</div></div>`;
+    view.innerHTML = `<div class="page">${pastRunBanner()}<a class="back" href="#/">← Scoreboard</a><div class="empty">This strategy has no trades in this run.</div></div>`;
     return;
   }
-  // A past run may hold a rule that has since been removed, or used other settings.
-  const known = state.status.signals.find((/** @type {any} */ s) => s.id === id);
-  const runParams = shownRun()?.settings.signals?.[id];
-  const meta = { name: known?.name ?? id, description: known?.description ?? '', params: runParams ?? known?.params ?? {} };
+  const s = strategyOf(id);
+  const rule = s ? state.status.signals.find((/** @type {any} */ x) => x.id === s.rule) : null;
+  const run = shownRun();
+  const params = (run ? runStrategies(run.settings)[id]?.params : null) ?? s?.params ?? {};
+  const paramText = Object.entries(params).map(([k, v]) => `${k} ${v}`).join(' · ');
   const tw = r.twin;
   const active = trades.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending');
   const closed = trades.filter((/** @type {any} */ t) => t.status === 'closed');
   const skipped = trades.filter((/** @type {any} */ t) => t.status === 'cancelled');
   const ci = r.all.winRateCi ? `could be ${share(r.all.winRateCi[0])}–${share(r.all.winRateCi[1])}` : 'none closed yet';
-  const params = Object.entries(meta.params).map(([k, v]) => `${k} ${v}`).join(' · ');
   const checks = `<table class="t compact checks"><tbody>${r.checks
     .map((/** @type {any} */ c) => `<tr><td class="${c.pass ? 'pos' : 'muted'}">${c.pass ? '✓' : '✗'}</td><td>${esc(c.label)}</td><td class="num muted">${esc(c.detail)}</td></tr>`)
     .join('')}</tbody></table>`;
+  const v = r.verdict;
+  const verdictLine = v ? `<p class="secondary verdict-line"><b>${esc(VERDICT_TEXT[v.label] ?? v.label)}</b> <span class="muted">· ${esc(v.detail)}</span></p>` : '';
   const twinFilled = twinTrades.filter((/** @type {any} */ t) => t.status !== 'cancelled');
 
   view.innerHTML = `<div class="page">
@@ -575,36 +672,38 @@ async function rulePage(view, id) {
     <a class="back" href="#/">← Scoreboard</a>
     <div class="rule-hero" style="--c:${colorOf(id)}">
       <div>
-        <div class="card-top"><h1 class="rule-name" title="${esc(meta.description)}${params ? `\n${esc(params)}` : ''}">${dot(id)}${esc(meta.name)}</h1>${verdictTag(r)}</div>
-        ${heroNumber(r)}
-        <div class="card-row">${pips(r)}</div>
+        <h1 class="rule-name">${dot(id)}${esc(nameOf(id))}${s?.retired ? ' <span class="tag">Retired</span>' : ''}</h1>
+        <div class="card-rule" title="${esc(rule?.description ?? '')}${paramText ? `\n${esc(paramText)}` : ''}">${esc(rule?.name ?? '')} · ${esc(exitsText(shownExits(id)))}</div>
+        ${heroNumber(r, true)}
+        ${statusLine(r)}
       </div>
       <div class="strip">
-        <div><div class="k">Balance</div><div class="v">$${r.equityUsd.toFixed(0)}</div><div class="s">twin $${tw.equityUsd.toFixed(0)}</div></div>
+        <div><div class="k">Balance</div><div class="v">$${r.equityUsd.toFixed(0)}</div><div class="s">random $${tw.equityUsd.toFixed(0)}</div></div>
         <div><div class="k">Win rate</div><div class="v">${share(r.all.winRate)}</div><div class="s">${ci}</div></div>
-        <div><div class="k">Avg trade</div><div class="v ${tone(r.all.avgPnlPct)}">${pct(r.all.avgPnlPct)}</div><div class="s">twin ${pct(tw.all.avgPnlPct)}</div></div>
+        <div><div class="k">Avg trade</div><div class="v ${tone(r.all.avgPnlPct)}">${pct(r.all.avgPnlPct)}</div><div class="s">random ${pct(tw.all.avgPnlPct)}</div></div>
         <div><div class="k">Closed</div><div class="v">${r.all.closed}</div><div class="s">${active.length} open · ${skipped.length} skipped</div></div>
       </div>
-      ${xpBar(r)}
     </div>
 
-    ${panel('rule-checks', `Go-live checks <span class="count">${r.checks.filter((/** @type {any} */ c) => c.pass).length}/6</span>`, checks, false)}
-    ${panel('rule-balance', `Balance <span class="key-dash" title="Dashed line is the random twin"></span>`, '<div class="chart-box"><div class="chart" id="balance"></div></div>')}
+    ${panel('rule-checks', `Go-live checks <span class="count">${r.checks.filter((/** @type {any} */ c) => c.pass).length}/6</span>`, verdictLine + checks, false)}
+    ${panel('rule-balance', `Balance <span class="key-dash" title="Dashed line: its random picker"></span>`, '<div class="chart-box"><div class="chart" id="balance"></div></div>')}
     ${panel('rule-open', `Open <span class="count">${active.length}</span>`, tradeRows(active, { showWhy: true }))}
     ${panel('rule-closed', `Closed <span class="count">${closed.length}</span>`, tradeRows(closed, { showWhy: true }))}
-    ${panel('rule-twin', `Random twin <span class="count">${twinFilled.length}</span>`, tradeRows(twinFilled), false)}
+    ${panel('rule-twin', `Random picker <span class="count">${twinFilled.length}</span>`, tradeRows(twinFilled), false)}
     ${panel('rule-skipped', `Skipped <span class="count">${skipped.length}</span>`, tradeRows(skipped, { showWhy: true }), false)}
     ${panel('rule-fires', `Every fire <span class="count">${events.length}</span>`, firesTable(events), false)}
   </div>`;
   const el = document.getElementById('balance');
-  if (el) balanceChart(
-    el,
-    [
-      { id, curve: r.equityCurve, dashed: false },
-      { id, curve: tw.equityCurve, dashed: true },
-    ],
-    res.startingBankrollUsd,
-  );
+  if (el) {
+    balanceChart(
+      el,
+      [
+        { color: colorOf(id), curve: r.equityCurve, dashed: false },
+        { color: css('--baseline'), curve: tw.equityCurve, dashed: true },
+      ],
+      res.startingBankrollUsd,
+    );
+  }
 }
 
 /** @param {any[]} events */
@@ -631,11 +730,14 @@ async function coinsPage(view) {
   const rows = tokens
     .map((/** @type {any} */ t) => {
       const tradable = (t.liquidityUsd ?? 0) >= min;
-      const holders = [...new Set(t.openStrategies)].map((st) => dot(String(st))).join('');
+      const holders = [...new Set(t.openStrategies)]
+        .filter((st) => st !== 'random')
+        .map((st) => `<span title="${esc(nameOf(String(st)))}">${dot(String(st))}</span>`)
+        .join('');
       const r = ratio(t);
       return `<tr class="link" data-href="#/coin/${encodeURIComponent(t.poolAddress)}" style="${tradable ? '' : 'opacity:.5'}">
         <td class="num muted">${t.trendingRank ?? ''}</td>
-        <td><b>${esc(t.symbol)}</b> <span style="display:inline-flex;gap:3px;margin-left:4px">${holders}</span></td>
+        <td><b>${esc(t.symbol)}</b> <span class="holders">${holders}</span></td>
         <td class="num">${price(t.priceUsd)}</td>
         ${hasChange ? `<td class="num ${tone(t.priceChangeM5)}">${t.priceChangeM5 === null ? '–' : pct(t.priceChangeM5 / 100)}</td>` : ''}
         <td class="num">${usd(t.liquidityUsd)}</td>
@@ -648,7 +750,6 @@ async function coinsPage(view) {
     .join('');
   view.innerHTML = `<div class="page">
     <div class="page-head"><h1>Trending coins</h1></div>
-    <p class="sub">Dimmed coins have under $${Math.round(min / 1000)}K liquidity, so no rule trades them. Dots show which rules hold a coin.</p>
     ${tokens.length ? `<div class="scroll-x"><table class="t"><thead><tr>
       <th class="num">#</th><th>Coin</th><th class="num">Price</th>${hasChange ? '<th class="num">5m</th>' : ''}<th class="num">Liquidity</th>
       <th class="num" title="Market cap (italic: fully diluted value, when market cap is missing)">Mkt cap</th><th class="num">Vol 1h</th>
@@ -679,12 +780,78 @@ async function coinPage(view, pool) {
       <div><div class="k">Volume 5m / 1h</div><div class="v">${usd(s.volM5)}</div><div class="s">${usd(s.volH1)} 1h</div></div>
       <div><div class="k">Buyers / sellers 5m</div><div class="v">${s.buyersM5 ?? '–'} / ${s.sellersM5 ?? '–'}</div><div class="s">${s.buysM5 ?? '–'} / ${s.sellsM5 ?? '–'} trades</div></div>
     </div>
-    <h2>Price <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· ▲ buy ▼ sell, colored by rule</span></h2>
+    <h2>Price <span class="muted" style="text-transform:none;letter-spacing:0;font-weight:400">· ▲ buy ▼ sell, colored by strategy, grey for random</span></h2>
     <div class="chart-box"><div class="readout"></div><div class="chart tall" id="price"></div></div>
     <h2>Trades on this coin (${filled.length})</h2>
-    ${filled.length ? `<table class="t compact"><tbody>${filled.map((/** @type {any} */ t) => `<tr><td class="muted mono">${clock(t.openedAt ?? t.signalAt)}</td><td><span class="rule-name">${dot(t.strategy === 'random' ? String(t.book).split(':')[1] : t.strategy)}${esc(owner(t))}</span></td><td class="wrap">${outcome(t)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No rule has traded this coin.</div>'}
+    ${filled.length ? `<table class="t compact"><tbody>${filled.map((/** @type {any} */ t) => `<tr><td class="muted mono">${clock(t.openedAt ?? t.signalAt)}</td><td><span class="rule-name">${t.strategy === 'random' ? '<span class="dot random"></span>' : dot(t.strategy)}${esc(owner(t))}</span></td><td class="wrap">${outcome(t)}</td></tr>`).join('')}</tbody></table>` : '<div class="empty">No strategy has traded this coin.</div>'}
   </div>`;
   priceChart(/** @type {HTMLElement} */ (document.getElementById('price')), snapshots, filled);
+}
+
+/** One rule in plain words, numbers from its settings. @param {any} s */
+function ruleText(s) {
+  const p = s.params;
+  const idea = String(s.description).match(/The idea:.*$/)?.[0] ?? '';
+  if (s.id === 'buyer-seller-ratio')
+    return `buys when at least ${p.minRatio} times as many different wallets bought as sold in the last 5 minutes (and at least ${p.minBuyers} buyers). ${idea}`;
+  if (s.id === 'liquidity-mcap-ratio') return `buys when the coin's liquidity is at least ${p100(p.minRatio)} of its total value. ${idea}`;
+  if (s.id === 'volume-spike')
+    return `buys when the last 5 minutes of trading is at least ${p.minMultiple} times the usual for that hour (and at least ${kUsd(p.minVolM5)}). ${idea}`;
+  return s.description;
+}
+
+/** @param {HTMLElement} view */
+function guidePage(view) {
+  const st = state.status;
+  const t = st.trade;
+  const bank = dollars(st.startingBankrollUsd ?? 1000);
+  const cost = p100(t.feeRate + t.slippageRate);
+  const floor = kUsd(st.universe.minLiquidityUsd);
+  const runs = runsInOrder().slice().reverse();
+  const strategies = st.strategies
+    .map(
+      (/** @type {any} */ s) => `<tr class="link" data-href="#/rule/${esc(s.id)}">
+        <td><span class="rule-name">${dot(s.id)}<b>${esc(s.codeName)}</b></span></td>
+        <td>${esc(ruleName(s.rule))}</td>
+        <td class="mono">${esc(exitsText(s.trade))}</td>
+        <td class="muted">${s.retired ? 'retired' : ''}</td>
+      </tr>`,
+    )
+    .join('');
+  const runRows = runs
+    .map((r) => {
+      const now = r.id === st.runId;
+      const viewing = r.id === (state.viewRun ?? st.runId);
+      return `<tr class="link" data-open-run="${r.id}">
+        <td><b>Run ${r.n}</b>${now ? ' <span class="muted">· now</span>' : ''}${viewing && !now ? ' <span class="muted">· viewing</span>' : ''}</td>
+        <td class="muted">${esc(dayTime(r.startedAt))} to ${esc(dayTime(r.lastActivityAt))}</td>
+        <td class="num">${r.trades} trade${r.trades === 1 ? '' : 's'}</td>
+      </tr>`;
+    })
+    .join('');
+
+  view.innerHTML = `<div class="page guide">
+    <h1>Guide</h1>
+    <p><b>What this is.</b> A practice trading lab. It watches trending Solana memecoins and makes pretend trades. No wallet, no real money, no real orders.</p>
+    <p><b>The question it answers.</b> Can a simple rule pick coins better than picking at random? Each strategy gets its own pretend ${bank}. Every time a strategy buys a coin, its own random picker buys a random coin at the same moment, with the same money and the same selling rules. If the strategy can't beat that, it's luck, not skill.</p>
+    <p><b>How every trade works.</b> Spend $${t.sizeUsd}. Sell when the price is down ${p100(t.stopLossPct)}, up ${p100(t.takeProfitPct)}, or after ${t.timeLimitMin} minutes, whichever comes first (faster strategies use tighter numbers, listed below). Only coins with at least ${floor} of trading money behind them ("liquidity") are allowed. Each trade pays realistic costs: about ${cost} going in and again going out, more for smaller coins, and it buys at the next price check rather than instantly. If a coin's liquidity collapses, the trade counts as almost a total loss.</p>
+    <p><b>The rules.</b></p>
+    <ul>${st.signals.map((/** @type {any} */ s) => `<li><b>${esc(s.name)}:</b> ${esc(ruleText(s))}</li>`).join('')}</ul>
+    <p><b>Strategies.</b> A strategy is a code-name, one rule, and its own selling numbers. Settings never change under a code-name; trying new numbers means a new code-name, and a retired one stops buying but keeps its history.</p>
+    <table class="t compact guide-table"><thead><tr><th>Code-name</th><th>Rule</th><th>Stop / target / time</th><th></th></tr></thead><tbody>${strategies}</tbody></table>
+    <p><b>Reading a card.</b> The big number is how many dollars the strategy is ahead of (or behind) its random picker. The status says where it is: Warming up (fewer than 30 finished trades, too early to judge), Not ready (some go-live checks fail), Behind random, Ready but could be luck, or Ready. Hover the status to see the checks.</p>
+    <p><b>The six go-live checks.</b> At least 30 finished trades · total profit above zero · more profit than its random picker · average trade +5% or better · still in profit without its single best trade · in profit in both the first and second half of the run.</p>
+    <p><b>Could be luck.</b> The more strategies run, the more likely one looks good by chance, so the luck test gets stricter as strategies are added. Retired ones still count.</p>
+    <p><b>The chart.</b> One solid line per strategy shown. The grey dashed line is the average of their random pickers. Lines move when trades finish.</p>
+    <p><b>Show.</b> The menu next to the clock picks which strategies the home screen shows. The chart, the Trades list and the top-right number follow it.</p>
+    <p><b>The clock.</b> Counts paper-run time toward the 3 hours the go-live rules ask for. Breaks over 5 minutes don't count.</p>
+    <p><b>The top-right number.</b> Your pretend ${bank} split evenly across the strategies shown: the average of their balances, including open trades. The dot next to it is live data: green is fresh, red is stale, grey is off. Click it to turn live data off or quit.</p>
+    <p><b>Coins.</b> Dimmed coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin.</p>
+    <p><b>Runs.</b> Changing a shared trading setting (costs, the coin filter) starts a new run with fresh balances, so old and new results never mix. Adding or retiring a strategy does not.</p>
+    <h2>Past runs</h2>
+    ${runs.length ? `<table class="t compact runs-table"><tbody>${runRows}</tbody></table>` : '<div class="empty">None yet.</div>'}
+    <p class="muted credits">Data: <a href="https://www.geckoterminal.com" target="_blank" rel="noopener">GeckoTerminal</a>. Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a>.</p>
+  </div>`;
 }
 
 // ---------- routing & refresh ----------
@@ -695,6 +862,7 @@ function route() {
   if (page === 'rule' && arg) return { page: 'rule', arg: decodeURIComponent(arg) };
   if (page === 'coin' && arg) return { page: 'coin', arg: decodeURIComponent(arg) };
   if (page === 'coins') return { page: 'coins', arg: '' };
+  if (page === 'guide') return { page: 'guide', arg: '' };
   return { page: 'home', arg: '' };
 }
 
@@ -710,9 +878,11 @@ async function render() {
   const openDetails = [...view.querySelectorAll('details')].map((d) => d.open);
   try {
     destroyCharts();
+    if (!state.results && (r.page === 'home' || r.page === 'rule')) await loadResults();
     if (r.page === 'rule') await rulePage(view, r.arg);
     else if (r.page === 'coins') await coinsPage(view);
     else if (r.page === 'coin') await coinPage(view, r.arg);
+    else if (r.page === 'guide') guidePage(view);
     else await scoreboardPage(view);
     if (key === lastRoute) view.querySelectorAll('details').forEach((d, i) => (d.open = openDetails[i] ?? false));
   } catch (err) {
@@ -724,30 +894,33 @@ async function render() {
   }
 }
 
+async function loadResults() {
+  state.results = await getJson(forRun('/api/results'));
+}
+
 async function refresh() {
   try {
-    state.status = await getJson('/api/status');
-    state.status.signals.forEach((/** @type {any} */ s, /** @type {number} */ i) => {
+    const [status] = await Promise.all([getJson('/api/status'), loadResults()]);
+    state.status = status;
+    // Colors follow the strategy list, so a strategy keeps its color on every page.
+    state.status.strategies.forEach((/** @type {any} */ s, /** @type {number} */ i) => {
       state.colors[s.id] = css(SERIES_VARS[i % SERIES_VARS.length]);
     });
-    state.colors.random = css('--baseline');
     renderTopbar();
     await render();
   } catch {
     if (quitting) return;
-    const el = document.getElementById('health');
-    if (el) el.innerHTML = `<span class="health bad"></span><span class="neg">Can't reach Paper Lab. Is it still running?</span>`;
+    const btn = document.getElementById('health');
+    if (btn) {
+      btn.title = "Can't reach Paper Lab. Is it still running?";
+      /** @type {HTMLElement} */ (btn.querySelector('.health')).className = 'health bad';
+    }
   }
 }
 
-document.getElementById('run-pick')?.addEventListener('change', (e) => {
-  const id = Number(/** @type {HTMLSelectElement} */ (e.target).value);
-  state.viewRun = id === state.status.runId ? null : id;
-  if (route().page === 'coins') location.hash = '#/';
-  void render();
-});
+const view = /** @type {HTMLElement} */ (document.getElementById('view'));
 
-document.getElementById('view')?.addEventListener(
+view.addEventListener(
   'toggle',
   (e) => {
     const d = /** @type {HTMLDetailsElement} */ (e.target);
@@ -761,41 +934,78 @@ document.getElementById('view')?.addEventListener(
   true,
 );
 
-document.getElementById('view')?.addEventListener('click', (e) => {
-  if (/** @type {HTMLElement} */ (e.target).closest('[data-run="current"]')) {
-    state.viewRun = null;
-    renderRunPicker();
-    void render();
-    return;
-  }
-  const tr = /** @type {HTMLElement} */ (e.target).closest('[data-href]');
-  if (tr && !/** @type {HTMLElement} */ (e.target).closest('a, input, label, summary')) location.hash = String(tr.getAttribute('data-href'));
+view.addEventListener('change', (e) => {
+  const el = /** @type {HTMLSelectElement} */ (e.target);
+  if (el.id !== 'show-pick') return;
+  state.show = el.value;
+  save('show', el.value);
+  renderPortfolio();
+  void render();
 });
+
+view.addEventListener('click', (e) => {
+  const target = /** @type {HTMLElement} */ (e.target);
+  if (target.closest('[data-run="current"]')) return openRun(null);
+  const runRow = target.closest('[data-open-run]');
+  if (runRow) return openRun(Number(runRow.getAttribute('data-open-run')));
+  const live = target.closest('[data-live]');
+  if (live) return void setLive(/** @type {HTMLButtonElement} */ (live));
+  const tr = target.closest('[data-href]');
+  if (tr && !target.closest('a, input, label, summary, select')) location.hash = String(tr.getAttribute('data-href'));
+});
+
 window.addEventListener('hashchange', () => {
   if (state.status) renderTopbar();
   void render();
 });
 
+let resizeTimer = 0;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = window.setTimeout(fitHomeChart, 100);
+});
+
 /** @param {string} url */
 const post = (url) => fetch(url, { method: 'POST', headers: { 'x-paper-lab': '1' } });
 
-document.getElementById('live-ctl')?.addEventListener('click', async (e) => {
-  const b = /** @type {HTMLElement} */ (e.target).closest('[data-live]');
-  if (!b) return;
-  /** @type {HTMLButtonElement} */ (b).disabled = true;
+/** @param {HTMLButtonElement} b */
+async function setLive(b) {
+  b.disabled = true;
+  closeMenu();
   await post(`/api/live/${b.getAttribute('data-live')}`).catch(() => {});
   await refresh();
+}
+
+// The dot in the top bar opens a tiny menu: live data on/off, and quit.
+const menu = /** @type {HTMLElement} */ (document.getElementById('menu'));
+const closeMenu = () => (menu.hidden = true);
+document.getElementById('health')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  menu.hidden = !menu.hidden;
+});
+document.addEventListener('click', (e) => {
+  if (!menu.hidden && !menu.contains(/** @type {Node} */ (e.target))) closeMenu();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeMenu();
+});
+menu.addEventListener('click', (e) => {
+  const b = /** @type {HTMLElement} */ (e.target).closest('button');
+  if (!b) return;
+  if (b.hasAttribute('data-quit')) return void quit();
+  void setLive(/** @type {HTMLButtonElement} */ (b));
 });
 
 let quitting = false;
-document.getElementById('quit')?.addEventListener('click', async () => {
+async function quit() {
+  closeMenu();
   if (!confirm('Quit Paper Lab? Live data stops and the helper shuts down. Your trades are saved.')) return;
   quitting = true;
   events.close();
   clearInterval(timer);
   await post('/api/quit').catch(() => {});
   document.body.innerHTML = `<div class="goodbye"><div class="brand">PAPER LAB</div><p>Paper Lab is off. Nothing is running.</p><p class="muted">Double-click the Paper Lab icon on your desktop to start it again. You can close this tab.</p></div>`;
-});
+}
 
 const events = new EventSource('/api/events');
 events.addEventListener('cycle', () => void refresh());

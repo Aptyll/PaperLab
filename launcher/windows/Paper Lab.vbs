@@ -6,8 +6,8 @@
 ' What it does:
 '   1. If Paper Lab is already running, just opens the page.
 '   2. Otherwise starts it hidden (no black window) with live data OFF,
-'      waits until it answers, then opens the page in Chrome (or your default
-'      browser if Chrome isn't installed).
+'      waits until it answers, then opens the page maximized in Chrome (or your
+'      default browser if Chrome isn't installed).
 ' Nothing is fetched or traded until you press "Turn On Live Data" on the page.
 ' The Quit button on the page shuts everything down.
 
@@ -59,10 +59,12 @@ End Function
 
 Sub OpenPage()
   On Error Resume Next
-  shell.Run "chrome.exe " & url, 1, False
+  ' --new-window so it never lands as a tab in an existing window of another size.
+  shell.Run "chrome.exe --new-window --start-maximized " & url, 1, False
   If Err.Number <> 0 Then
     Err.Clear
-    shell.Run url, 1, False
+    ' Default browser. 3 asks for maximized; some browsers ignore it.
+    shell.Run url, 3, False
   End If
   On Error GoTo 0
 End Sub

@@ -23,6 +23,7 @@ const TYPES = /** @type {Record<string, string>} */ ({
  * @param {import('./db.js').Store} deps.store
  * @param {import('./config.js').Config} deps.config
  * @param {import('./types.js').SignalModule[]} deps.signals
+ * @param {import('./types.js').Strategy[]} deps.strategies
  * @param {import('./providers/provider.js').MarketProvider} deps.provider
  * @param {import('./app.js').App|null} deps.app
  * @param {boolean} deps.aiEnabled
@@ -30,7 +31,7 @@ const TYPES = /** @type {Record<string, string>} */ ({
  * @param {() => void} [deps.onQuit]  Shuts the whole app down (the Quit button).
  * @returns {http.Server}
  */
-export function createServer({ store, config, signals, provider, app, aiEnabled, runId, onQuit }) {
+export function createServer({ store, config, signals, strategies, provider, app, aiEnabled, runId, onQuit }) {
   /** @type {Set<http.ServerResponse>} */
   const sseClients = new Set();
   app?.on('cycle', (c) => {
@@ -41,6 +42,14 @@ export function createServer({ store, config, signals, provider, app, aiEnabled,
   });
 
   const signalMeta = signals.map((s) => ({ id: s.id, name: s.name, description: s.description, params: s.params }));
+  const strategyMeta = strategies.map((s) => ({
+    id: s.id,
+    codeName: s.codeName,
+    rule: s.signal.id,
+    params: s.params,
+    trade: { sizeUsd: s.trade.sizeUsd, stopLossPct: s.trade.stopLossPct, takeProfitPct: s.trade.takeProfitPct, timeLimitMin: s.trade.timeLimitMin },
+    retired: s.retired,
+  }));
 
   /**
    * Add what the UI needs to explain a trade: the current move of open trades,
@@ -89,6 +98,7 @@ export function createServer({ store, config, signals, provider, app, aiEnabled,
         lastCycle: app?.lastCycle ?? null,
         recentPolls: store.recentPolls(10),
         signals: signalMeta,
+        strategies: strategyMeta,
         randomStrategy: RANDOM_STRATEGY,
         runId,
         runs: store.runs(),
@@ -150,7 +160,7 @@ export function createServer({ store, config, signals, provider, app, aiEnabled,
       const start = info?.startedAt ?? 0;
       const end = run === runId ? Date.now() : info?.lastActivityAt ?? start;
       // A past run may include rules that have since been removed or renamed.
-      const ids = signals.map((s) => s.id).filter((id) => run === runId || trades.some((t) => t.strategy === id));
+      const ids = strategies.map((s) => s.id).filter((id) => run === runId || trades.some((t) => t.strategy === id));
       for (const t of trades) if (t.strategy !== RANDOM_STRATEGY && !ids.includes(t.strategy)) ids.push(t.strategy);
       const bankroll = settings?.startingBankrollUsd ?? config.startingBankrollUsd;
       const costs = { ...config.trade, ...settings?.trade };
@@ -158,7 +168,7 @@ export function createServer({ store, config, signals, provider, app, aiEnabled,
         runId: run,
         startingBankrollUsd: bankroll,
         breakevenMovePct: breakevenMove(costs),
-        strategies: strategyResults({ trades, strategies: ids, startingBankroll: bankroll, latestPrice, window: { start, end } }),
+        strategies: strategyResults({ trades, strategies: ids, startingBankroll: bankroll, latestPrice, window: { start, end }, tested: ids.length }),
         // Paper-run clock from the go-live rules: stops longer than 5 minutes don't count.
         clock: { startedAt: start, activeMs: store.activeMs(start, end, GO_LIVE.maxGapMs), targetMs: GO_LIVE.paperRunMs },
         calibration: calibration(trades),

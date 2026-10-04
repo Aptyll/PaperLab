@@ -3,10 +3,9 @@
 /** @type {import('../types.js').SignalModule} */
 export default {
   id: 'liquidity-mcap-ratio',
-  name: 'Liquidity / Market Cap',
+  name: 'Deep pool',
   description:
-    'Fires when pool liquidity is large relative to market cap (FDV when market cap is missing). ' +
-    'The idea: deeper liquidity means a token is harder to dump on you and its price is less fragile.',
+    "Buys when the coin's liquidity is a large share of its total value. The idea: a deep pool is harder to crash, so the price is less fragile.",
   params: {
     minRatio: 0.15, // liquidity / market cap
     minLiquidityUsd: 10000,

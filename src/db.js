@@ -513,12 +513,14 @@ export class Store {
         // An upgrade in the middle of a paper run shouldn't restart it. Older
         // versions only recorded the trade settings, so compare those (and the
         // engine); anything they didn't record is taken to be unchanged.
-        prev = {
-          ...settings,
-          engine: prev.engine,
-          trade: { ...settings.trade, ...prev.trade },
-          signals: { ...settings.signals, ...prev.signals },
-        };
+        const trade = { ...settings.trade, ...prev.trade };
+        // Back then each rule traded under its own id with the run's exits.
+        const strategies = Object.fromEntries(
+          Object.entries(settings.strategies ?? {})
+            .filter(([id, st]) => id === st.signal)
+            .map(([id, st]) => [id, { ...st, exits: Object.fromEntries(Object.keys(st.exits).map((k) => [k, /** @type {any} */ (trade)[k]])) }]),
+        );
+        prev = { ...settings, engine: prev.engine, trade, strategies };
       }
       if (canContinue(prev, settings)) {
         const merged = { ...settings, signals: { ...prev.signals, ...settings.signals } };

@@ -60,11 +60,33 @@
  * A pluggable signal. Each file in src/signals/ default-exports one of these.
  *
  * @typedef {Object} SignalModule
- * @property {string} id            Unique slug, also the strategy name for its paper trades.
+ * @property {string} id            Unique slug. Strategies refer to rules by it.
  * @property {string} name          Display name.
  * @property {string} description   One or two sentences shown in the UI.
  * @property {Record<string, number>} params  Default thresholds.
  * @property {(ctx: SignalContext) => SignalResult} evaluate
+ */
+
+/**
+ * One entry in src/strategies.js.
+ * @typedef {Object} StrategyDef
+ * @property {string} id          Stable slug; trades are stored under it. Never reuse one.
+ * @property {string} codeName    Shown on screen.
+ * @property {string} signal      Id of the rule it uses (a file in src/signals/).
+ * @property {Record<string, number>} [params]  Rule settings that differ from the rule's defaults.
+ * @property {Partial<Pick<TradeRules, 'sizeUsd'|'stopLossPct'|'takeProfitPct'|'timeLimitMin'>>} [exits]
+ * @property {boolean} [retired]  Stops buying; history stays.
+ */
+
+/**
+ * A strategy ready to trade: its rule, final rule settings and final trade rules.
+ * @typedef {Object} Strategy
+ * @property {string} id
+ * @property {string} codeName
+ * @property {SignalModule} signal
+ * @property {Record<string, number>} params
+ * @property {TradeRules} trade
+ * @property {boolean} retired
  */
 
 /**

@@ -72,32 +72,61 @@ function meanVar(xs) {
   return { n, mean, variance };
 }
 
+/** Upper tail of the standard normal, P(Z > z). Abramowitz-Stegun 7.1.26, error under 1e-7. @param {number} z */
+function normalTail(z) {
+  const x = Math.abs(z) / Math.SQRT2;
+  const t = 1 / (1 + 0.3275911 * x);
+  const erfc = t * (0.254829592 + t * (-0.284496736 + t * (1.421413741 + t * (-1.453152027 + t * 1.061405429)))) * Math.exp(-x * x);
+  return z >= 0 ? erfc / 2 : 1 - erfc / 2;
+}
+
+/**
+ * How many standard errors ahead a strategy must be before "could be luck"
+ * goes away. One strategy: 2 (about a 2% chance by luck). Testing more
+ * strategies gives luck more tries, so the bar rises to keep the chance that
+ * any of them clears it by luck about the same (Bonferroni):
+ * about 2.4 for three strategies, 2.7 for six.
+ * @param {number} tested  Strategies tested in the run, retired ones included.
+ */
+export function luckBar(tested) {
+  const target = normalTail(2) / Math.max(1, tested);
+  let lo = 0;
+  let hi = 10;
+  for (let i = 0; i < 60; i++) {
+    const mid = (lo + hi) / 2;
+    if (normalTail(mid) > target) lo = mid;
+    else hi = mid;
+  }
+  return hi;
+}
+
 /**
  * Is a rule really beating its random twin, or could it be luck?
  * Compares average P&L per closed trade with a Welch t test:
  * under 30 closed trades -> too early; not ahead -> no edge;
- * ahead by less than about 2 standard errors -> leaning; more -> clear.
+ * ahead by less than luckBar(tested) standard errors -> leaning; more -> clear.
  *
  * @param {PaperTrade[]} rule  Closed trades of the rule.
  * @param {PaperTrade[]} twin  Closed trades of its random twin.
+ * @param {number} [tested]    Strategies tested side by side in the run.
  * @returns {Verdict}
  */
-export function verdict(rule, twin) {
+export function verdict(rule, twin, tested = 1) {
   const a = rule.map((t) => t.pnlPct ?? 0);
   const b = twin.map((t) => t.pnlPct ?? 0);
   if (a.length < MIN_TRADES_FOR_VERDICT) {
     return { label: 'too_early', detail: `${a.length} of ${MIN_TRADES_FOR_VERDICT} closed trades needed`, edgePct: null, tStat: null };
   }
   if (b.length < 2) {
-    return { label: 'too_early', detail: 'random twin has too few closed trades to compare', edgePct: null, tStat: null };
+    return { label: 'too_early', detail: 'its random picker has too few closed trades to compare', edgePct: null, tStat: null };
   }
   const x = meanVar(a);
   const y = meanVar(b);
   const edge = x.mean - y.mean;
   const se = Math.sqrt(x.variance / x.n + y.variance / y.n);
   const t = se > 0 ? edge / se : edge > 0 ? Infinity : 0;
-  if (edge <= 0) return { label: 'no_edge', detail: 'not ahead of its random twin', edgePct: edge, tStat: t };
-  if (t < 2) return { label: 'leaning', detail: 'ahead of random, but luck could explain it', edgePct: edge, tStat: t };
+  if (edge <= 0) return { label: 'no_edge', detail: 'not ahead of its random picker', edgePct: edge, tStat: t };
+  if (t < luckBar(tested)) return { label: 'leaning', detail: 'ahead of random, but luck could explain it', edgePct: edge, tStat: t };
   return { label: 'clear', detail: 'ahead of random by more than luck usually explains', edgePct: edge, tStat: t };
 }
 
@@ -148,7 +177,7 @@ export function goLiveChecks(rule, twin, window) {
   return [
     { id: 'trades', label: `At least ${GO_LIVE.minTrades} closed trades`, pass: n >= GO_LIVE.minTrades, detail: `${n} closed` },
     { id: 'profit', label: 'Total profit is positive', pass: n > 0 && pnl > 0, detail: money(pnl) },
-    { id: 'random', label: 'Made more than its random twin', pass: n > 0 && pnl > twinPnl, detail: `${money(pnl)} vs ${money(twinPnl)}` },
+    { id: 'random', label: 'Made more than its random picker', pass: n > 0 && pnl > twinPnl, detail: `${money(pnl)} vs ${money(twinPnl)}` },
     {
       id: 'average',
       label: `Average trade +${GO_LIVE.minAvgPct * 100}% or better`,
@@ -210,9 +239,10 @@ function bookResult(mine, startingBankroll, latestPrice) {
  * @param {number} a.startingBankroll      Per book.
  * @param {(poolAddress: string) => {price: number, liquidityUsd: number|null}|null} a.latestPrice
  * @param {{start: number, end: number}} [a.window]  The run's time span, for the "both halves" check.
+ * @param {number} [a.tested]  Strategies tested side by side (sets the luck bar).
  * @returns {StrategyResult[]}
  */
-export function strategyResults({ trades, strategies, startingBankroll, latestPrice, window }) {
+export function strategyResults({ trades, strategies, startingBankroll, latestPrice, window, tested }) {
   const closedIn = (/** @type {string} */ book) => trades.filter((t) => t.book === book && t.status === 'closed');
   const rows = strategies.map((strategy) => ({
     strategy,
@@ -226,7 +256,7 @@ export function strategyResults({ trades, strategies, startingBankroll, latestPr
       startingBankroll,
       latestPrice,
     ),
-    verdict: verdict(closedIn(strategy), closedIn(`${RANDOM_STRATEGY}:${strategy}`)),
+    verdict: verdict(closedIn(strategy), closedIn(`${RANDOM_STRATEGY}:${strategy}`), tested ?? strategies.length),
     checks: goLiveChecks(closedIn(strategy), closedIn(`${RANDOM_STRATEGY}:${strategy}`), window ?? spanOf(trades)),
   }));
   const randomAll = bookResult(

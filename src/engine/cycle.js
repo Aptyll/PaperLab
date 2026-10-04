@@ -4,7 +4,7 @@ import { RANDOM_STRATEGY } from './signal-loader.js';
 
 /** @typedef {import('../types.js').Snapshot} Snapshot */
 /** @typedef {import('../types.js').PaperTrade} PaperTrade */
-/** @typedef {import('../types.js').SignalModule} SignalModule */
+/** @typedef {import('../types.js').Strategy} Strategy */
 /** @typedef {import('../db.js').Store} Store */
 /** @typedef {import('../config.js').Config} Config */
 
@@ -12,7 +12,7 @@ import { RANDOM_STRATEGY } from './signal-loader.js';
  * @typedef {Object} CycleDeps
  * @property {Store} store
  * @property {import('../providers/provider.js').MarketProvider} provider
- * @property {SignalModule[]} signals
+ * @property {Strategy[]} strategies  Each trades its rule with its own exits and its own books.
  * @property {Config} config
  * @property {number} runId          The run new trades belong to (see runs.js).
  * @property {() => number} [now]
@@ -32,8 +32,8 @@ import { RANDOM_STRATEGY } from './signal-loader.js';
  * @property {PaperTrade[]} closed
  */
 
-/** @param {string} signalId */
-export const randomBook = (signalId) => `${RANDOM_STRATEGY}:${signalId}`;
+/** @param {string} strategyId */
+export const randomBook = (strategyId) => `${RANDOM_STRATEGY}:${strategyId}`;
 
 /**
  * Cash available to a book: bankroll minus money in open trades plus realized P&L.
@@ -52,15 +52,16 @@ export function availableCash(store, book, startingBankroll, runId) {
  * @param {string} book
  * @param {string} poolAddress
  * @param {Config} config
+ * @param {import('../types.js').TradeRules} trade  The strategy's trade rules.
  * @param {number} now
  * @param {number} runId
  */
-export function blockReason(store, book, poolAddress, config, now, runId) {
+export function blockReason(store, book, poolAddress, config, trade, now, runId) {
   if (store.trades({ book, poolAddress, status: 'open', runId, limit: 1 }).length) return 'already_open';
   if (store.trades({ book, poolAddress, status: 'pending', runId, limit: 1 }).length) return 'already_open';
   const last = store.lastClosedAt(book, poolAddress, runId);
-  if (last !== null && now - last < config.trade.reentryCooldownMin * 60_000) return 'cooldown';
-  if (availableCash(store, book, config.startingBankrollUsd, runId) < config.trade.sizeUsd) return 'no_cash';
+  if (last !== null && now - last < trade.reentryCooldownMin * 60_000) return 'cooldown';
+  if (availableCash(store, book, config.startingBankrollUsd, runId) < trade.sizeUsd) return 'no_cash';
   return null;
 }
 
@@ -72,7 +73,7 @@ export function blockReason(store, book, poolAddress, config, now, runId) {
  * @returns {Promise<CycleResult>}
  */
 export async function runCycle(deps) {
-  const { store, provider, signals, config, runId } = deps;
+  const { store, provider, strategies, config, runId } = deps;
   const now = deps.now ?? Date.now;
   const rand = deps.rand ?? Math.random;
   const log = deps.log ?? (() => {});
@@ -164,18 +165,21 @@ export async function runCycle(deps) {
 
   /** @type {PaperTrade[]} */
   const signalTrades = [];
-  for (const sig of signals) {
+  /** @type {Map<PaperTrade, Strategy>} */
+  const strategyOf = new Map();
+  for (const st of strategies) {
+    if (st.retired) continue;
     for (const snap of universe) {
       let res;
       try {
-        res = sig.evaluate({ snapshot: snap, history: historyFor(snap), params: sig.params });
+        res = st.signal.evaluate({ snapshot: snap, history: historyFor(snap), params: st.params });
       } catch (err) {
-        log(`signal ${sig.id} threw on ${snap.symbol}: ${err instanceof Error ? err.message : err}`);
+        log(`rule ${st.signal.id} (${st.codeName}) threw on ${snap.symbol}: ${err instanceof Error ? err.message : err}`);
         continue;
       }
       if (!res?.fired) continue;
       const ev = store.insertSignalEvent({
-        signalId: sig.id,
+        signalId: st.id,
         snapshotId: /** @type {number} */ (snap.id),
         poolAddress: snap.poolAddress,
         symbol: snap.symbol,
@@ -187,32 +191,35 @@ export async function runCycle(deps) {
         runId,
       });
       result.signalEvents++;
-      const blocked = blockReason(store, sig.id, snap.poolAddress, config, ts, runId);
+      const blocked = blockReason(store, st.id, snap.poolAddress, config, st.trade, ts, runId);
       if (blocked) {
         store.resolveSignalEvent(/** @type {number} */ (ev.id), null, blocked);
         continue;
       }
       const trade = store.insertTrade(
-        buildPendingTrade({ strategy: sig.id, snapshot: snap, rules: config.trade, now: ts, signalEventId: ev.id, runId }),
+        buildPendingTrade({ strategy: st.id, snapshot: snap, rules: st.trade, now: ts, signalEventId: ev.id, runId }),
       );
       store.resolveSignalEvent(/** @type {number} */ (ev.id), trade.id ?? null, null);
       signalTrades.push(trade);
+      strategyOf.set(trade, st);
       result.queued.push(trade);
     }
   }
 
-  // 5. Random control: for every signal trade, that signal's random twin buys a
-  // uniformly random token from the same universe, from its own $1,000 book.
-  for (const st of signalTrades) {
-    const book = randomBook(st.strategy);
-    const candidates = universe.filter((s) => blockReason(store, book, s.poolAddress, config, ts, runId) === null);
+  // 5. Random control: for every strategy trade, that strategy's random picker
+  // buys a uniformly random token from the same universe, from its own $1,000
+  // book, with the same exits.
+  for (const tr of signalTrades) {
+    const st = /** @type {Strategy} */ (strategyOf.get(tr));
+    const book = randomBook(st.id);
+    const candidates = universe.filter((s) => blockReason(store, book, s.poolAddress, config, st.trade, ts, runId) === null);
     if (!candidates.length) {
-      log(`random control skipped for trade ${st.id}: no eligible token or no cash in ${book}`);
+      log(`random control skipped for trade ${tr.id}: no eligible token or no cash in ${book}`);
       continue;
     }
     const pick = candidates[Math.floor(rand() * candidates.length)];
     const trade = store.insertTrade(
-      buildPendingTrade({ strategy: RANDOM_STRATEGY, book, snapshot: pick, rules: config.trade, now: ts, matchedTradeId: st.id, runId }),
+      buildPendingTrade({ strategy: RANDOM_STRATEGY, book, snapshot: pick, rules: st.trade, now: ts, matchedTradeId: tr.id, runId }),
     );
     result.queued.push(trade);
   }

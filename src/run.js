@@ -9,6 +9,8 @@ import { createSimulated } from './providers/simulated.js';
 import { disabledScorer, createClaudeScorer } from './ai/scorer.js';
 import { App } from './app.js';
 import { runSettings } from './engine/runs.js';
+import { resolveStrategies } from './engine/strategies.js';
+import strategyDefs from './strategies.js';
 import { createServer } from './server.js';
 
 const config = loadConfig();
@@ -18,6 +20,7 @@ if (!['127.0.0.1', 'localhost', '::1'].includes(config.host)) {
 
 const store = new Store(config.dbPath);
 const signals = await loadSignals(config.signalParams);
+const strategies = resolveStrategies(strategyDefs, signals, config.trade);
 const provider =
   config.provider === 'simulated'
     ? createSimulated()
@@ -31,17 +34,17 @@ for (const i of store.imported) {
   console.log(i.error ? `Could not merge ${i.file}: ${i.error}` : `Merged earlier results from ${i.file} as a past run.`);
 }
 // Same rules as last time: keep adding to that run. Different rules: start a new one.
-const runId = store.beginRun(runSettings(config, signals), Date.now());
+const runId = store.beginRun(runSettings(config, strategies), Date.now());
 if (store.rejoined) console.log(`Joined a paper run that an earlier update had split in two. Copy saved first: ${store.backupPath}`);
 const scorer = config.ai.enabled ? await createClaudeScorer(config.ai) : disabledScorer;
 
-const app = new App({ store, provider, signals, config, scorer, runId });
+const app = new App({ store, provider, strategies, config, scorer, runId });
 let shutdown = () => {};
-const server = createServer({ store, config, signals, provider, app, aiEnabled: scorer.enabled, runId, onQuit: () => shutdown() });
+const server = createServer({ store, config, signals, strategies, provider, app, aiEnabled: scorer.enabled, runId, onQuit: () => shutdown() });
 
 server.listen(config.port, config.host, () => {
   console.log(`Paper lab on http://localhost:${config.port}  (data: ${provider.id}, db: ${config.dbPath})`);
-  console.log(`Signals: ${signals.map((s) => s.id).join(', ')}. AI scoring: ${scorer.enabled ? 'on' : 'off'}.`);
+  console.log(`Strategies: ${strategies.filter((s) => !s.retired).map((s) => s.codeName).join(', ')}. AI scoring: ${scorer.enabled ? 'on' : 'off'}.`);
   if (config.startLive) app.start();
   else console.log('Live data is off. Press "Turn On Live Data" on the page to start.');
 });

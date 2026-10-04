@@ -18,13 +18,15 @@ npm run check      # type check (JSDoc + // @ts-check)
 
 `npm start` stores data in `data/paper.sqlite`. The demo writes to `data/demo.sqlite`, so fake trades never mix with real research data. Delete a file to start over.
 
-On Windows, `launcher/windows/Create desktop icon.cmd` adds a Paper Lab desktop icon that starts the app hidden with live data off (`--paused`) and opens the page. Nothing is added to startup. The page has Turn On / Turn off for live data and a quit button.
+On Windows, `launcher/windows/Create desktop icon.cmd` adds a Paper Lab desktop icon that starts the app hidden with live data off (`--paused`) and opens the page. Nothing is added to startup. The page opens maximized in Chrome. With live data off, a Turn On Live Data button sits over the chart; the dot at the top right opens a small menu to turn live data off or quit.
 
 ## Screens
 
-- **Scoreboard** (home): a paper-run clock toward the 3 hours the go-live rules ask for, then one card per rule. The big number is how far the rule is ahead of its random twin; the six pips are the go-live checks (hover for each); the bar along the bottom fills toward 30 closed trades. The rule closest to going live is outlined. Balance chart, open positions and activity sit below in panels you can fold away.
-- **Rule page**: balance vs twin, open trades with their live result, closed trades with the reason each one fired. Twin trades, skipped trades and every fire are folded away below.
-- **Coins**: the trending list. Coins below the liquidity floor are dimmed; dots show which rules hold a coin. Click one for its price chart with every buy and sell marked.
+- **Top bar**: the portfolio number (the average balance of the strategies shown, including open trades) and the live-data dot (green fresh, red stale, grey off; click for the menu).
+- **Scoreboard** (home): the paper-run clock and a **Show** filter (Active, Ahead of random, Ready, Retired, All, or one rule), then one compact card per strategy, sorted by status. The big number is how far the strategy is ahead of its random picker; the status line reads Warming up · n/30, Not ready · k/6 checks, Behind random, Ready · could be luck, or Ready (hover for the six checks). Below: the balance chart (a solid line per strategy, one grey dashed line averaging their random pickers) and a folded Trades panel.
+- **Strategy page** (`#/rule/<id>`): code-name, rule and exits; balance vs its random picker, the go-live checks and verdict, open and closed trades with the reason each one fired.
+- **Coins**: the trending list. Coins below the liquidity floor are dimmed; dots show which strategies hold a coin. Click one for its price chart with every buy and sell marked.
+- **Guide**: every explanation in plain words, with numbers taken from the current settings, the strategy list, and past runs (click one to view it).
 
 ## How it works
 
@@ -39,9 +41,24 @@ Every 60 seconds:
 
 Costs per trade, each way: 0.3% DEX fee, 1.5% execution slippage (delay, bots), and price impact from the pool's depth (constant-product math: $50 into a $100K pool costs about 0.1% more, into a $20K pool about 0.5%). Before impact, a token has to rise about 3.7% just to break even.
 
-**Runs.** Every set of trading rules is its own run. If you change a rule (stop loss, trade size, a signal's settings) or update to a version that simulates trades differently, a new run starts with fresh $1,000 books, and trades still open from the old run finish under their old rules. Earlier runs stay in the database: pick one from the menu at the top to see its scoreboard exactly as it ended. Adding a new signal file does not start a new run.
+**Runs.** Every set of trading rules is its own run. If you change a shared setting (costs, the coin filter, the bankroll), a strategy's settings, or update to a version that simulates trades differently, a new run starts with fresh $1,000 books, and trades still open from the old run finish under their old rules. Earlier runs stay in the database: open one from the Guide page to see its scoreboard exactly as it ended. Adding or retiring a strategy, or adding a signal file, does not start a new run.
 
 Updates never delete data. When a new version changes the database layout, it first saves a full copy (for example `data/paper.backup-v2-....sqlite`), then upgrades the database in place. Databases that an older version set aside (`data/paper.v1-....sqlite`) are merged back in as past runs and the files are left where they are.
+
+## Strategies
+
+A strategy is a code-name, one signal (a file in `src/signals/`), and optionally its own signal settings and exits (trade size, stop loss, take profit, time limit). They are listed in `src/strategies.js`:
+
+| Code-name | Rule | Exits |
+|---|---|---|
+| Falcon | Buy rush (`buyer-seller-ratio`) | −20% / +40% / 60 min |
+| Badger | Deep pool (`liquidity-mcap-ratio`) | −20% / +40% / 60 min |
+| Cobra | Volume burst (`volume-spike`) | −20% / +40% / 60 min |
+| Hawk | Buy rush | −10% / +20% / 20 min |
+| Otter | Deep pool | −10% / +20% / 20 min |
+| Viper | Volume burst | −10% / +20% / 20 min |
+
+Each strategy has its own $1,000 and its own random twin with the same exits. Falcon, Badger and Cobra keep the signal ids as their ids, so trades recorded before strategies existed stay with them. Settings are fixed per code-name: to try other numbers, add a new code-name; to stop one, set `retired: true` (it stops buying, open trades finish, history stays). The "could be luck" test gets stricter with the number of strategies in the run (a Bonferroni bar: 2.0 for one, about 2.4 for three, 2.7 for six), and retired ones still count.
 
 ## Settings
 
@@ -60,7 +77,7 @@ All defaults are in `src/config.js`.
 
 ## Adding a signal
 
-Add one file to `src/signals/`. It is picked up on restart and gets its own scoreboard row and detail page, its own $1,000, and its own random twin.
+Add one file to `src/signals/`. It is picked up on restart. A signal no strategy uses trades as its own strategy, under its own id and name, with its own $1,000 and random twin; add entries to `src/strategies.js` for code-names or other exits.
 
 ```js
 // src/signals/price-momentum.js

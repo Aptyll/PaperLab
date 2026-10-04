@@ -3,10 +3,9 @@
 /** @type {import('../types.js').SignalModule} */
 export default {
   id: 'buyer-seller-ratio',
-  name: 'Buyer/Seller Ratio',
+  name: 'Buy rush',
   description:
-    'Fires when unique buyers outnumber unique sellers by a wide margin over the last 5 minutes. ' +
-    'Falls back to buy/sell transaction counts when wallet counts are missing.',
+    'Buys when many more different wallets bought than sold in the last 5 minutes. The idea: lots of new buyers can push the price up.',
   params: {
     minRatio: 2.0, // buyers / sellers
     minBuyers: 15, // ignore thin activity

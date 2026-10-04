@@ -61,15 +61,15 @@ Instead of Step 3 every time, you can start Paper Lab from an icon:
 
 1. Open the Paper Lab folder, then `launcher`, then `windows`.
 2. Double-click **Create desktop icon**. A window says "Done". Close it.
-3. From now on, double-click **Paper Lab** on your desktop. No black window appears; Chrome opens the dashboard.
+3. From now on, double-click **Paper Lab** on your desktop. No black window appears; Chrome opens the dashboard in a new, maximized window. (Without Chrome, your default browser opens it; some browsers ignore the maximize request.)
 
-The page opens with live data **off**: nothing is fetched or traded until you press **Turn On Live Data**. **Turn off** (top right) stops the data. The **⏻** button quits Paper Lab completely, so nothing is left running.
+The page opens with live data **off**: nothing is fetched or traded until you press **Turn On Live Data** in the middle of the chart. To turn it off again, or to quit Paper Lab completely so nothing is left running, click the small dot at the top right.
 
 Nothing starts by itself when your computer turns on. The icon is the only way in. To remove it, delete the icon.
 
 ## Getting a newer version
 
-Your trades live in the `data` folder inside the Paper Lab folder. Updates never delete them: if a new version needs to change how they're stored, it saves a full copy first, and older results stay viewable from the run menu at the top of the page.
+Your trades live in the `data` folder inside the Paper Lab folder. Updates never delete them: if a new version needs to change how they're stored, it saves a full copy first, and older results stay viewable from the Guide page.
 
 If you update by downloading a fresh ZIP, you get a new folder without your history. Before starting the new one, stop Paper Lab and copy the `data` folder from the old folder into the new one.
 

@@ -3,10 +3,9 @@
 /** @type {import('../types.js').SignalModule} */
 export default {
   id: 'volume-spike',
-  name: 'Volume Spike',
+  name: 'Volume burst',
   description:
-    'Fires when the last 5 minutes of volume is several times the average 5-minute volume of the rest of the hour. ' +
-    'It does not look at direction, so it can fire on sell-offs too.',
+    "Buys when the last 5 minutes of trading is several times the usual for that hour. The idea: sudden attention. It can't tell buying from selling, so it also fires on crashes.",
   params: {
     minMultiple: 3, // last 5m volume / average 5m volume over the previous 55m
     minVolM5: 5000, // USD, ignore tiny absolute volume

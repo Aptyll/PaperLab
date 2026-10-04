@@ -8,25 +8,21 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#/">PAPER LAB</a>
-    <span class="badge-paper" title="No wallet, no real orders. Every trade here is simulated.">PAPER</span>
+    <a class="brand" href="#/" title="Paper Lab">PL</a>
     <nav class="nav">
       <a href="#/" data-nav="home">Scoreboard</a>
       <a href="#/coins" data-nav="coins">Coins</a>
+      <a href="#/guide" data-nav="guide">Guide</a>
     </nav>
-    <select id="run-pick" class="run-pick" hidden title="Each change to the trading rules starts a new run. Earlier runs stay here."></select>
     <span class="spacer"></span>
-    <span id="live-ctl"></span>
-    <span id="health" class="health-text muted">connecting…</span>
-    <button type="button" id="quit" class="btn-icon" title="Quit Paper Lab (stops everything)" aria-label="Quit Paper Lab">⏻</button>
+    <span id="portfolio" class="portfolio"></span>
+    <span class="dot-menu">
+      <button type="button" id="health" class="health-btn" aria-haspopup="menu" aria-label="Live data"><span class="health"></span></button>
+      <span id="menu" class="menu" role="menu" hidden></span>
+    </span>
   </header>
 
   <main id="view" class="view"></main>
-
-  <footer class="footer muted">
-    Simulated trades only. Data: <a href="https://www.geckoterminal.com" target="_blank" rel="noopener">GeckoTerminal</a>.
-    Charts: <a href="https://www.tradingview.com/" target="_blank" rel="noopener">TradingView</a>.
-  </footer>
 
   <script src="/vendor/lightweight-charts.standalone.production.js"></script>
   <script type="module" src="/app.js"></script>
