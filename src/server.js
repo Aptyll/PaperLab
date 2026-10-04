@@ -65,6 +65,7 @@ export function createServer({ store, config, signals, strategies, provider, app
     trade: { sizeUsd: s.trade.sizeUsd, stopLossPct: s.trade.stopLossPct, takeProfitPct: s.trade.takeProfitPct, timeLimitMin: s.trade.timeLimitMin },
     retired: s.retired,
     skipCopycats: s.skipCopycats ?? false,
+    formerly: s.formerly ?? null,
   }));
 
   /**
@@ -225,7 +226,8 @@ export function createServer({ store, config, signals, strategies, provider, app
       // What the strategies are buying right now, with each one's measured hit rate. Current run only.
       const now = Date.now();
       const active = strategies.filter((s) => !s.retired);
-      const odds = hitRates(store.trades(), active);
+      // Odds come from this session's trades only: sessions don't share history.
+      const odds = hitRates(store.trades({ runId }), active);
       const coins = hotCoins({
         events: store.signalFiresSince(now - HOT_WINDOW_MIN * 60_000, runId),
         strategies: active.map((s) => ({ id: s.id, rule: s.signal.id })),
@@ -303,7 +305,7 @@ export function createServer({ store, config, signals, strategies, provider, app
       if (!allowedHost(req.headers.host)) return send(res, 403, 'text/plain', 'Forbidden host');
       const url = new URL(req.url ?? '/', 'http://localhost');
       if (req.method === 'POST') {
-        // The only things a page can change: live data on/off, and quit.
+        // The only things a page can change: live data on/off, sessions (new, delete), and quit.
         // Another website open in the same browser could try to send these, so
         // require our own origin plus a custom header (which forces the browser
         // to ask permission first, and we never grant it).
@@ -325,6 +327,19 @@ export function createServer({ store, config, signals, strategies, provider, app
           await app?.switchRun(runId);
           for (const c of sseClients) c.write(`event: cycle\ndata: {}\n\n`);
           return send(res, 200, 'application/json', JSON.stringify({ runId }));
+        }
+        if (url.pathname === '/api/sessions/delete') {
+          // Delete a past session, asked for and confirmed on the page. A full
+          // copy of the database is saved first. The session trading now can't be deleted.
+          const id = Number(url.searchParams.get('id'));
+          const run = store.runs().find((r) => r.id === id);
+          if (!run || run.deletedAt !== null) return send(res, 404, 'application/json', '{"error":"no such session"}');
+          if (id === runId) return send(res, 409, 'application/json', '{"error":"the current session can\'t be deleted; start a new one first"}');
+          await app?.inFlight;
+          const backup = store.deleteRun(id, Date.now());
+          console.log(`[${new Date().toISOString()}] Deleted session (run ${id}) from the page. Backup: ${backup ?? 'none'}`);
+          for (const c of sseClients) c.write(`event: cycle\ndata: {}\n\n`);
+          return send(res, 200, 'application/json', JSON.stringify({ deleted: id, backup }));
         }
         if (url.pathname === '/api/quit' && onQuit) {
           send(res, 200, 'application/json', '{"quitting":true}');

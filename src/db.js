@@ -18,6 +18,7 @@ import { canContinue } from './engine/runs.js';
  * @property {string|null} note
  * @property {number} trades       Trades that filled (cancelled ones not counted).
  * @property {number|null} lastActivityAt
+ * @property {number|null} deletedAt  Set when deleted from the page: its trades are gone, the row stays so session numbers don't shift.
  */
 
 /** Snapshot fields in column order: [jsName, sqlName]. */
@@ -453,6 +454,7 @@ export class Store {
     /** Whether a run split by an earlier upgrade was joined back together on this start. */
     this.rejoined = false;
     this.db.exec(RUNS_SCHEMA);
+    if (!this.db.prepare("SELECT 1 FROM pragma_table_info('runs') WHERE name = 'deleted_at'").get()) this.db.exec('ALTER TABLE runs ADD COLUMN deleted_at INTEGER');
     this.db.exec(SCHEMA);
     this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}; PRAGMA foreign_keys = ON;`);
     /** @type {{file: string, runId: number|null, error: string|null}[]} Databases set aside by earlier versions, merged in now. */
@@ -538,7 +540,7 @@ export class Store {
   beginRun(settings, now) {
     this.rejoinSplitRun(settings);
     const last = /** @type {any} */ (
-      this.db.prepare("SELECT * FROM runs WHERE origin IN ('live', 'migrated') ORDER BY id DESC LIMIT 1").get()
+      this.db.prepare("SELECT * FROM runs WHERE origin IN ('live', 'migrated') AND deleted_at IS NULL ORDER BY id DESC LIMIT 1").get()
     );
     if (last) {
       /** @type {RunSettings} */
@@ -645,7 +647,35 @@ export class Store {
         note: r.note === null ? null : String(r.note),
         trades: Number(r.trade_count),
         lastActivityAt: r.last_activity === null ? null : Number(r.last_activity),
+        deletedAt: r.deleted_at === null || r.deleted_at === undefined ? null : Number(r.deleted_at),
       }));
+  }
+
+  /**
+   * Delete a session (run) from the page: its trades and signal fires go, after
+   * a full copy of the database is saved next to it. Price history is shared by
+   * every session and stays. The run row stays, marked deleted, so the other
+   * sessions keep their numbers and a database it was imported from isn't
+   * imported again.
+   * @param {number} runId
+   * @param {number} now
+   * @returns {string|null} The backup's path (null for an in-memory database).
+   */
+  deleteRun(runId, now) {
+    let backup = null;
+    if (this.file !== ':memory:') {
+      const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
+      backup = this.file.replace(/\.sqlite$/, '') + `.backup-before-deleting-session-${runId}-${stamp}.sqlite`;
+      this.db.exec(`VACUUM INTO '${backup.replace(/'/g, "''")}'`);
+    }
+    this.tx(() => {
+      // Trades and signal fires point at each other; check the links once both are gone.
+      this.db.exec('PRAGMA defer_foreign_keys = ON');
+      this.db.prepare('DELETE FROM trades WHERE run_id = ?').run(runId);
+      this.db.prepare('DELETE FROM signal_events WHERE run_id = ?').run(runId);
+      this.db.prepare('UPDATE runs SET deleted_at = ? WHERE id = ?').run(now, runId);
+    });
+    return backup;
   }
 
   /**
