@@ -686,9 +686,6 @@ function rangePick() {
     .join('')}</div>`;
 }
 
-/** Only the latest buys and sells get a mark, so the chart stays readable; hovering shows any moment's. */
-const CHART_MARKS = 12;
-
 /**
  * Balance over time, one line per book. Every line starts at the bankroll when
  * the run starts and is carried flat to the end, so all lines share both edges.
@@ -796,7 +793,6 @@ function balanceChart(el, lines, start, span = {}) {
     }
   }
   events.sort((a, b) => b.t - a.t);
-  const marked = new Set(events.slice(0, CHART_MARKS));
 
   /** @type {{series: any, line: ChartLine, real: {t: number, v: number}[]}[]} */
   const drawn = [];
@@ -847,9 +843,10 @@ function balanceChart(el, lines, start, span = {}) {
   };
   /** @type {TradeMark[]} */
   const marks = [];
-  for (const e of marked) {
-    const buy = e.sell ? [...marked].find((b) => !b.sell && b.trade === e.trade) : undefined;
-    marks.push({ ...at(e), sell: e.sell, color: markColor(e.sell, e.trade.pnlPct), from: buy ? at(buy) : undefined, label: e.trade.symbol });
+  // Every buy and sell in view is marked at the moment it happened. With every
+  // buy marked, lines from sells back to buys would only crowd the chart.
+  for (const e of events) {
+    marks.push({ ...at(e), sell: e.sell, color: markColor(e.sell, e.trade.pnlPct), label: e.trade.symbol });
   }
   drawn[drawn.length - 1].series.attachPrimitive(new TradeMarks(marks, grid));
   if (gaps.length || offFor) drawn[0].series.attachPrimitive(new GapMarks(gaps, offFor, grid));
@@ -1458,7 +1455,7 @@ function guidePage(view) {
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
     <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale. The square icon beside the dot switches full screen on and off (Esc also leaves it).</p>
-    <p><b>Buys and sells.</b> The chart marks the latest buys with a ringed B and sells with a filled S, green when the trade made money and red when it lost, each with the coin's ticker beside it, and a faint dotted line from each sell back to its buy. Hover anywhere on the chart to see the balances and the trades, with tickers, at that moment; move the mouse off the chart and the panel goes away.</p>
+    <p><b>Buys and sells.</b> The chart marks every buy with a ringed B, at the moment it happened, and every sell with a filled S, green when the trade made money and red when it lost, each with the coin's ticker beside it (when tickers would overlap, some are left out). Hover anywhere on the chart to see the balances and the trades, with tickers, at that moment; move the mouse off the chart and the panel goes away.</p>
     <p><b>Hot now.</b> Top right: coins a strategy's rule fired on in the last 15 minutes, the ones the strategies are buying right now. Coins where more different rules agree come first (a fast and a slow version of one rule count once), then the best odds. The odds are measured, not guessed: how often that strategy's past paper trades reached its take profit before its stop loss or time limit, out of how many trades, next to its random picker's rate for comparison. Under 10 trades it says so instead of showing a rate. The percent on the right is how far the price has moved since the first signal, so you can see if you'd be late. Hover a coin for every strategy's numbers. It's there to point you at coins worth a look; you decide.</p>
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
     <p><b>Coins.</b> Dimmed trending coins have under ${floor} liquidity, so no strategy trades them. Dots show which strategies hold a coin right now.</p>
