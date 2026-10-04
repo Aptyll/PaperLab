@@ -1442,7 +1442,7 @@ function guidePage(view) {
     <p><b>Time views.</b> The buttons in the chart's top corner show the last 15 minutes, hour or 4 hours, or the whole run. Paper Lab only collects prices while it's running, so time it was off (your computer asleep, the app closed) is skipped rather than drawn as a flat line: a faint dashed line marks the spot with how long it was off, like "off 6.2h". If it's off right now, the end of the chart says for how long.</p>
     <p><b>Trades.</b> Scroll down on the home screen for open trades and the last 10 finished ones. Retired strategies stay in the table above but leave the home screen.</p>
     <p><b>Portfolio.</b> Your pretend ${bank} split evenly across the active strategies: the average of their balances, including open trades.</p>
-    <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale.</p>
+    <p><b>The dot.</b> Top right of the menu bar: live data is green when fresh, red when stale, grey when off. Click it to turn live data off or quit. The bar stays visible while data is stale. The square icon beside the dot switches full screen on and off (Esc also leaves it).</p>
     <p><b>Buys and sells.</b> The chart marks the latest buys (hollow ring) and sells (solid dot) on each strategy's line, with a faint dotted line from each sell back to its buy, and lists the newest few with their tickers in its corner. Hover anywhere on the chart to see the balances and the trades at that moment.</p>
     <p><b>Hot now.</b> Top right: coins a strategy's rule fired on in the last 15 minutes, the ones the strategies are buying right now. Coins where more different rules agree come first (a fast and a slow version of one rule count once), then the best odds. The odds are measured, not guessed: how often that strategy's past paper trades reached its take profit before its stop loss or time limit, out of how many trades, next to its random picker's rate for comparison. Under 10 trades it says so instead of showing a rate. The percent on the right is how far the price has moved since the first signal, so you can see if you'd be late. Hover a coin for every strategy's numbers. It's there to point you at coins worth a look; you decide.</p>
     <p><b>Best coins.</b> Beside the chart and on the Coins page: every coin the strategies bought this run, ranked by profit (finished trades plus open ones as if sold now, after costs). Dots show which strategies bought it.</p>
@@ -1622,6 +1622,25 @@ menu.addEventListener('click', (e) => {
   if (b.hasAttribute('data-reset')) return void startOver();
   void setLive(/** @type {HTMLButtonElement} */ (b));
 });
+
+// Full screen: the browser's own, so Esc leaves it too. The icon follows the actual state.
+const fsBtn = /** @type {HTMLButtonElement} */ (document.getElementById('fullscreen'));
+const FS_ICON = {
+  enter: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg>',
+  exit: '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4H2M14 6h-4V2M10 14v-4h4M2 10h4v4"/></svg>',
+};
+const showFullscreen = () => {
+  const on = !!document.fullscreenElement;
+  fsBtn.innerHTML = on ? FS_ICON.exit : FS_ICON.enter;
+  fsBtn.title = fsBtn.ariaLabel = on ? 'Exit full screen' : 'Full screen';
+};
+fsBtn.hidden = !document.fullscreenEnabled;
+fsBtn.addEventListener('click', () => {
+  const go = document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen();
+  go.catch(() => {});
+});
+document.addEventListener('fullscreenchange', showFullscreen);
+showFullscreen();
 
 let quitting = false;
 async function quit() {
