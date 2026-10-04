@@ -248,6 +248,7 @@ function priceChart(el, snapshots, trades) {
   const markers = [];
   for (const t of trades) {
     const color = colorOf(t.strategy);
+    if (!t.openedAt) continue; // pending or cancelled: never bought
     const openTime = Math.floor(t.openedAt / 1000);
     if (openTime >= first) {
       markers.push({ time: openTime, position: 'belowBar', shape: 'arrowUp', color, size: 1, text: '' });
@@ -312,6 +313,22 @@ function equityChart(el, strategies, start) {
 const tile = (k, v, sub = '', cls = '') =>
   `<div class="tile"><div class="k">${esc(k)}</div><div class="v ${cls}">${v}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
 
+/** @param {any} t */
+function statusLabel(t) {
+  if (t.status === 'open') return '<span class="secondary">open</span>';
+  if (t.status === 'pending') return '<span class="secondary" title="Fills at the next price check, like a trade placed by hand a minute later">waiting to fill</span>';
+  if (t.status === 'cancelled') {
+    const why = /** @type {Record<string, string>} */ ({
+      chased: 'price ran up more than 5% before it could fill',
+      no_data: 'no fresh price to fill at',
+      twin_cancelled: 'the signal trade it mirrors was cancelled',
+    })[t.cancelReason] ?? t.cancelReason;
+    return `<span class="muted" title="${esc(why)}">cancelled</span>`;
+  }
+  if (t.exitReason === 'collapsed') return '<span class="neg" title="Pool lost most of its liquidity; sold into what was left">collapsed</span>';
+  return esc(String(t.exitReason).replace('_', ' '));
+}
+
 /** @param {any[]} trades @param {boolean} showStrategy */
 function tradesTable(trades, showStrategy) {
   if (!trades.length) return `<div class="empty">No trades yet.</div>`;
@@ -321,10 +338,10 @@ function tradesTable(trades, showStrategy) {
       return `<tr>
         ${showStrategy ? `<td><span class="dot" style="background:${colorOf(t.strategy)}"></span> ${esc(strategyName(t.strategy))}</td>` : ''}
         <td>${esc(t.symbol)}</td>
-        <td>${esc(stamp(t.openedAt))}</td>
-        <td class="num">${price(t.entryPrice)}</td>
+        <td>${esc(stamp(t.openedAt ?? t.signalAt))}</td>
+        <td class="num" title="${t.entryFillPrice ? `Paid ${price(t.entryFillPrice)} on average after costs and price impact. Signal price ${price(t.signalPrice)}.` : ''}">${t.entryPrice === null ? '–' : price(t.entryPrice)}</td>
         <td class="num">${t.exitPrice === null ? '–' : price(t.exitPrice)}</td>
-        <td>${t.status === 'open' ? '<span class="secondary">open</span>' : esc(String(t.exitReason).replace('_', ' '))}</td>
+        <td>${statusLabel(t)}</td>
         <td class="num ${signClass(t.pnlUsd)}">${pnlUsd(t.pnlUsd)}</td>
         <td class="num ${signClass(t.pnlPct)}">${pct(t.pnlPct)}</td>
         <td class="num" title="${esc(t.aiRationale ?? '')}">${ai}</td>
@@ -392,7 +409,7 @@ async function strategyView(view, strategy) {
   ]);
   const r = results.strategies.find((/** @type {any} */ x) => x.strategy === strategy);
   const meta = state.status.signals.find((/** @type {any} */ s) => s.id === strategy);
-  const open = trades.filter((/** @type {any} */ t) => t.status === 'open');
+  const open = trades.filter((/** @type {any} */ t) => t.status === 'open' || t.status === 'pending');
   const closed = trades.filter((/** @type {any} */ t) => t.status === 'closed');
   const ci = r.all.winRateCi ? `95% CI ${Math.round(r.all.winRateCi[0] * 100)}–${Math.round(r.all.winRateCi[1] * 100)}%` : 'no closed trades';
   const m = r.twin?.all ?? null;
@@ -459,7 +476,7 @@ async function resultsView(view) {
         <td class="num ${signClass(m?.avgPnlPct)}">${m ? pct(m.avgPnlPct) : ''}</td>
         <td class="num">${r.twin ? `$${r.twin.equityUsd.toFixed(2)}` : ''}</td>
         <td class="num ${signClass(edge)}">${edge === null ? (m ? '–' : '') : pct(edge)}</td>
-        <td class="secondary wrap">${Object.entries(r.exitReasons).map(([k, v]) => `${esc(k.replace('_', ' '))} ${v}`).join(', ')}</td>
+        <td class="secondary wrap">${Object.entries(r.exitReasons).map(([k, v]) => `${esc(k.replace('_', ' '))} ${v}`).join(', ')}${r.cancelled ? `${Object.keys(r.exitReasons).length ? ', ' : ''}<span class="muted">cancelled ${r.cancelled}</span>` : ''}</td>
       </tr>`;
     })
     .join('');
@@ -474,7 +491,8 @@ async function resultsView(view) {
         <th class="num" title="This signal's random twin: random tokens bought at the same moments, from its own $1,000">Twin win</th>
         <th class="num">Twin avg</th><th class="num">Twin equity</th><th class="num" title="Avg P&L minus twin avg P&L">Edge</th><th>Exits</th>
       </tr></thead><tbody>${rows}</tbody></table></div>
-      <p class="note">Costs: a trade needs a ${pct(res.breakevenMovePct)} price move just to break even (fees plus slippage, both ways).
+      <p class="note">Costs: a trade needs at least a ${pct(res.breakevenMovePct)} price move to break even (fees plus slippage, both ways), more in thinner pools because of price impact.
+      Trades fill one price check after the signal, are skipped if the price already ran up 5%, and coins whose liquidity collapses while held are sold into what's left.
       ${minClosed < 30 ? 'Some strategies have fewer than 30 closed trades, so treat win rates as noise until the intervals narrow.' : ''}
       Each signal has a random twin with its own $1,000 that buys a random token every time the signal buys, so both face the same market and the same cash limits. "Edge" is the signal's average P&amp;L minus its twin's.</p>
     </div>

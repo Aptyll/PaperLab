@@ -56,7 +56,7 @@ export function createSimulated(opts = {}) {
       symbol: `SIM${counter}`,
       price: 0.00001 * (1 + rand() * 50),
       supply: 1e9,
-      liquidity: 5_000 + rand() * 80_000,
+      liquidity: 60_000 + rand() * 900_000,
       hype: rand(),
       createdAt: now() - Math.floor(rand() * 6 * 3600_000),
       volHist: [],
@@ -71,10 +71,12 @@ export function createSimulated(opts = {}) {
     p.hype = Math.min(1, Math.max(0, p.hype + (rand() - 0.5) * 0.25));
     const drift = (p.hype - 0.5) * 0.04;
     let ret = drift + (rand() - 0.5) * 0.12;
-    if (rand() < 0.01) ret = -0.7; // occasional rug
+    const rug = rand() < 0.01; // occasional rug
+    if (rug) ret = -0.7;
     if (rand() < 0.02) ret += 0.5; // occasional pump
     p.price = Math.max(1e-12, p.price * (1 + ret));
     p.liquidity = Math.max(500, p.liquidity * (1 + ret * 0.5));
+    if (rug) p.liquidity *= 0.1; // a rug drains the pool
     const vol = p.liquidity * (0.05 + p.hype * 0.6) * (rand() < 0.05 ? 6 : 1);
     const txs = Math.round(vol / 150);
     const buyShare = Math.min(0.95, Math.max(0.05, 0.5 + (p.hype - 0.5) * 0.6 + (rand() - 0.5) * 0.2));

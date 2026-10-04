@@ -1,6 +1,6 @@
 // @ts-check
 import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, existsSync, renameSync } from 'node:fs';
 import path from 'node:path';
 
 /** @typedef {import('./types.js').Snapshot} Snapshot */
@@ -55,10 +55,15 @@ const TRADE_COLS = /** @type {const} */ ([
   ['stopLossPct', 'stop_loss_pct'],
   ['takeProfitPct', 'take_profit_pct'],
   ['timeLimitMs', 'time_limit_ms'],
+  ['signalAt', 'signal_at'],
+  ['signalSnapshotId', 'signal_snapshot_id'],
+  ['signalPrice', 'signal_price'],
+  ['cancelReason', 'cancel_reason'],
   ['openedAt', 'opened_at'],
   ['entrySnapshotId', 'entry_snapshot_id'],
   ['entryPrice', 'entry_price'],
   ['entryFillPrice', 'entry_fill_price'],
+  ['entryLiquidityUsd', 'entry_liquidity_usd'],
   ['quantity', 'quantity'],
   ['closedAt', 'closed_at'],
   ['exitSnapshotId', 'exit_snapshot_id'],
@@ -84,6 +89,13 @@ const EVENT_COLS = /** @type {const} */ ([
   ['tradeId', 'trade_id'],
   ['skipReason', 'skip_reason'],
 ]);
+
+/**
+ * Bump when the trades table changes in a way old rows can't follow. An older
+ * database is set aside (renamed, not deleted) and a fresh one is started,
+ * since results from different trading rules shouldn't be mixed anyway.
+ */
+export const SCHEMA_VERSION = 2;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS snapshots (
@@ -142,18 +154,23 @@ CREATE TABLE IF NOT EXISTS trades (
   pool_address TEXT NOT NULL,
   token_address TEXT NOT NULL,
   symbol TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('open', 'closed')),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'open', 'closed', 'cancelled')),
   size_usd REAL NOT NULL,
   fee_rate REAL NOT NULL,
   slippage_rate REAL NOT NULL,
   stop_loss_pct REAL NOT NULL,
   take_profit_pct REAL NOT NULL,
   time_limit_ms INTEGER NOT NULL,
-  opened_at INTEGER NOT NULL,
-  entry_snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
-  entry_price REAL NOT NULL,
-  entry_fill_price REAL NOT NULL,
-  quantity REAL NOT NULL,
+  signal_at INTEGER NOT NULL,
+  signal_snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+  signal_price REAL NOT NULL,
+  cancel_reason TEXT,
+  opened_at INTEGER,
+  entry_snapshot_id INTEGER REFERENCES snapshots(id),
+  entry_price REAL,
+  entry_fill_price REAL,
+  entry_liquidity_usd REAL,
+  quantity REAL,
   closed_at INTEGER,
   exit_snapshot_id INTEGER REFERENCES snapshots(id),
   exit_price REAL,
@@ -170,6 +187,24 @@ CREATE INDEX IF NOT EXISTS trades_strategy_status ON trades (strategy, status);
 CREATE INDEX IF NOT EXISTS trades_book_pool ON trades (book, pool_address, status);
 CREATE INDEX IF NOT EXISTS trades_pool_status ON trades (pool_address, status);
 `;
+
+/**
+ * @param {string} file
+ * @returns {string|null}  New path of the archived database, or null if nothing was moved.
+ */
+function archiveIfOutdated(file) {
+  if (!existsSync(file)) return null;
+  const probe = new DatabaseSync(file);
+  const version = Number(/** @type {any} */ (probe.prepare('PRAGMA user_version').get()).user_version);
+  const hasTrades = probe.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'trades'").get();
+  probe.close();
+  if (!hasTrades || version >= SCHEMA_VERSION) return null;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const target = file.replace(/\.sqlite$/, '') + `.v${version || 1}-${stamp}.sqlite`;
+  renameSync(file, target);
+  for (const ext of ['-wal', '-shm']) if (existsSync(file + ext)) renameSync(file + ext, target + ext);
+  return target;
+}
 
 /**
  * @param {readonly (readonly [string, string])[]} cols
@@ -206,8 +241,14 @@ const insertSql = (table, cols) =>
 export class Store {
   /** @param {string} file  Path, or ":memory:". */
   constructor(file) {
-    if (file !== ':memory:') mkdirSync(path.dirname(file), { recursive: true });
+    /** @type {string|null} Where an outdated database was moved, if it was. */
+    this.archivedTo = null;
+    if (file !== ':memory:') {
+      mkdirSync(path.dirname(file), { recursive: true });
+      this.archivedTo = archiveIfOutdated(file);
+    }
     this.db = new DatabaseSync(file);
+    this.db.exec(`PRAGMA user_version = ${SCHEMA_VERSION}`);
     this.db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
     this.db.exec(SCHEMA);
     this.insertSnapshotStmt = this.db.prepare(insertSql('snapshots', SNAPSHOT_COLS));
@@ -379,7 +420,7 @@ export class Store {
     if (f.book) (where.push('book = ?'), args.push(f.book));
     if (f.status) (where.push('status = ?'), args.push(f.status));
     if (f.poolAddress) (where.push('pool_address = ?'), args.push(f.poolAddress));
-    const sql = `SELECT * FROM trades ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY opened_at DESC, id DESC LIMIT ?`;
+    const sql = `SELECT * FROM trades ${where.length ? 'WHERE ' + where.join(' AND ') : ''} ORDER BY signal_at DESC, id DESC LIMIT ?`;
     args.push(f.limit ?? 100000);
     return this.db
       .prepare(sql)
@@ -418,22 +459,22 @@ export class Store {
   }
 
   /**
-   * Realized P&L minus cash locked in open trades, for one book.
+   * Realized P&L minus cash locked in pending and open trades, for one book.
    * @param {string} book
    */
   cashDelta(book) {
     const r = /** @type {{d: number|null}|undefined} */ (
       this.db
-        .prepare("SELECT SUM(CASE WHEN status = 'open' THEN -size_usd ELSE pnl_usd END) AS d FROM trades WHERE book = ?")
+        .prepare("SELECT SUM(CASE WHEN status IN ('open', 'pending') THEN -size_usd WHEN status = 'closed' THEN pnl_usd ELSE 0 END) AS d FROM trades WHERE book = ?")
         .get(book)
     );
     return r?.d ?? 0;
   }
 
-  /** Distinct pools that have at least one open trade. */
+  /** Distinct pools with a pending or open trade (they need fresh prices every poll). */
   openPools() {
     return this.db
-      .prepare("SELECT DISTINCT pool_address AS p FROM trades WHERE status = 'open'")
+      .prepare("SELECT DISTINCT pool_address AS p FROM trades WHERE status IN ('open', 'pending')")
       .all()
       .map((r) => String(r.p));
   }

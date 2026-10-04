@@ -84,8 +84,12 @@
  */
 
 /**
- * @typedef {'open'|'closed'} TradeStatus
- * @typedef {'take_profit'|'stop_loss'|'time_limit'|'no_data'} ExitReason
+ * @typedef {'pending'|'open'|'closed'|'cancelled'} TradeStatus
+ *   pending: signal seen, waiting for the next poll to fill (like a person placing the trade by hand).
+ *   cancelled: never filled (price ran away, or no fresh data). Cancelled trades cost nothing and are left out of results.
+ * @typedef {'take_profit'|'stop_loss'|'time_limit'|'no_data'|'collapsed'} ExitReason
+ *   collapsed: the pool lost most of its liquidity while held; sold into what was left.
+ * @typedef {'chased'|'no_data'|'twin_cancelled'} CancelReason
  */
 
 /**
@@ -104,15 +108,20 @@
  * @property {TradeStatus} status
  * @property {number} sizeUsd           Cash committed, fees included.
  * @property {number} feeRate           Per side, e.g. 0.003.
- * @property {number} slippageRate      Per side, e.g. 0.015.
+ * @property {number} slippageRate      Per side, e.g. 0.015, on top of price impact.
  * @property {number} stopLossPct       e.g. 0.20 means close at -20% price move.
  * @property {number} takeProfitPct     e.g. 0.40 means close at +40% price move.
  * @property {number} timeLimitMs
- * @property {number} openedAt
- * @property {number} entrySnapshotId
- * @property {number} entryPrice        Observed mid price at entry.
- * @property {number} entryFillPrice    Entry price after slippage.
- * @property {number} quantity          Tokens "bought".
+ * @property {number} signalAt          When the signal fired (epoch ms).
+ * @property {number} signalSnapshotId
+ * @property {number} signalPrice       Mid price when the signal fired.
+ * @property {CancelReason|null} cancelReason
+ * @property {number|null} openedAt     When it filled; null while pending or if cancelled.
+ * @property {number|null} entrySnapshotId
+ * @property {number|null} entryPrice        Observed mid price at the fill.
+ * @property {number|null} entryFillPrice    Average price paid after price impact and slippage.
+ * @property {number|null} entryLiquidityUsd Pool liquidity at the fill, to detect collapses.
+ * @property {number|null} quantity          Tokens "bought".
  * @property {number|null} closedAt
  * @property {number|null} exitSnapshotId
  * @property {number|null} exitPrice
@@ -129,8 +138,10 @@
 /**
  * @typedef {Object} TradeRules
  * @property {number} sizeUsd
- * @property {number} feeRate
- * @property {number} slippageRate
+ * @property {number} feeRate             DEX fee per side.
+ * @property {number} slippageRate        Execution slippage per side (delay, bots), on top of price impact.
+ * @property {number} maxChasePct         Cancel a pending trade if price rose more than this since the signal.
+ * @property {number} collapseLiquidityRatio  Exit as "collapsed" if liquidity falls below this share of entry liquidity.
  * @property {number} stopLossPct
  * @property {number} takeProfitPct
  * @property {number} timeLimitMin

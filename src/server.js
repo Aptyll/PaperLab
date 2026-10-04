@@ -38,7 +38,10 @@ export function createServer({ store, config, signals, provider, app, aiEnabled 
   const signalMeta = signals.map((s) => ({ id: s.id, name: s.name, description: s.description, params: s.params }));
 
   /** @param {string} pool */
-  const latestPrice = (pool) => store.latestSnapshot(pool)?.priceUsd ?? null;
+  const latestPrice = (pool) => {
+    const s = store.latestSnapshot(pool);
+    return s ? { price: s.priceUsd, liquidityUsd: s.liquidityUsd } : null;
+  };
 
   /**
    * @param {string} pathname
@@ -65,7 +68,7 @@ export function createServer({ store, config, signals, provider, app, aiEnabled 
     }
     if (pathname === '/api/tokens') {
       const since = Date.now() - Math.max(10 * 60_000, config.pollIntervalSec * 3000);
-      const open = store.trades({ status: 'open' });
+      const open = [...store.trades({ status: 'open' }), ...store.trades({ status: 'pending' })];
       const latest = store.latestPerPool(since);
       // Pools that dropped out of the latest trending list keep their old rank in
       // storage; blank it so ranks shown are always current.

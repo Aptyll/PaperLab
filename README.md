@@ -24,11 +24,14 @@ Every 60 seconds:
 
 1. **Fetch** the GeckoTerminal Solana trending pools (1 API call) plus any pools with open trades that left the list (1 call per 30 pools). A built-in limiter keeps it under 25 calls a minute (the free limit is 30).
 2. **Store** a snapshot per pool: price, market cap (or FDV when missing), liquidity, volume (5m/1h/6h/24h), buys/sells and unique buyers/sellers (5m/1h/24h), and pool creation time.
-3. **Close** open trades that hit stop loss (-20%), take profit (+40%) or the 60 minute limit. Prices are checked once per poll, so a fill happens at the observed price, which can be past the level.
-4. **Run signals** on every trending pool with at least $5K liquidity. When one fires, it opens a $50 paper trade, unless that signal already holds the token, closed it in the last 30 minutes, or is out of cash.
-5. **Random twin.** Each time a signal opens a trade, that signal's random twin buys a randomly chosen token from the same filtered list, with the same size, costs and exits. Every signal and every twin has its own $1,000, so both face the same cash limits. The Results tab shows each signal's "edge" over its twin.
+3. **Fill** trades queued at the previous check, at this check's price, the way a person copying a signal by hand would buy about a minute later. If the price has already risen more than 5% since the signal, the trade is cancelled instead (cancelled trades cost nothing and are left out of results).
+4. **Close** open trades that hit stop loss (-20%), take profit (+40%) or the 60 minute limit. Prices are checked once per poll, so a fill happens at the observed price, which can be past the level. If a coin's pool loses more than 80% of its liquidity while held, the trade closes as **collapsed** and sells into what is left, which is usually a near-total loss.
+5. **Run signals** on every trending pool with at least **$100K liquidity** and at least one sell in the last 5 minutes (a guard against coins that can be bought but not sold). These match the live trading rules. When a signal fires it queues a $50 paper trade, unless that signal already holds the token, closed it in the last 30 minutes, or is out of cash.
+6. **Random twin.** Each time a signal queues a trade, that signal's random twin queues one on a randomly chosen token from the same filtered list, with the same size, costs, timing and exits. If the signal's trade is cancelled, so is the twin's. Every signal and every twin has its own $1,000. The Results tab shows each signal's "edge" over its twin.
 
-Costs per trade: 0.3% fee and 1.5% slippage on entry and again on exit, so a token has to rise about 3.7% just to break even.
+Costs per trade, each way: 0.3% DEX fee, 1.5% execution slippage (delay, bots), and price impact from the pool's depth (constant-product math: $50 into a $100K pool costs about 0.1% more, into a $20K pool about 0.5%). Before impact, a token has to rise about 3.7% just to break even.
+
+If you upgrade from a version with different trade rules, the old database is renamed (for example `data/paper.v1-....sqlite`) and a fresh one starts, so results from different rules never mix.
 
 ## Settings
 
@@ -38,7 +41,7 @@ Copy what you want to change into `config.local.json` (git-ignored). Example:
 {
   "pollIntervalSec": 60,
   "trade": { "sizeUsd": 50, "stopLossPct": 0.2, "takeProfitPct": 0.4, "timeLimitMin": 60 },
-  "universe": { "minLiquidityUsd": 5000 },
+  "universe": { "minLiquidityUsd": 100000, "minSellsM5": 1 },
   "signalParams": { "volume-spike": { "minMultiple": 4 } }
 }
 ```

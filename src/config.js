@@ -16,7 +16,8 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
  * @property {'5m'|'1h'|'6h'|'24h'} trendingDuration
  * @property {number} maxCallsPerMinute     Our own ceiling, kept under GeckoTerminal's 30.
  * @property {number} startingBankrollUsd   Per strategy.
- * @property {{minLiquidityUsd: number}} universe  Filter applied to signal and random picks alike.
+ * @property {{minLiquidityUsd: number, minSellsM5: number}} universe  Filter applied to signal and random picks alike.
+ *   minSellsM5 guards against coins you can buy but not sell.
  * @property {import('./types.js').TradeRules} trade
  * @property {Record<string, Record<string, number>>} signalParams  Per-signal overrides, keyed by signal id.
  * @property {{enabled: boolean, model: string, effort: 'low'|'medium'|'high'}} ai
@@ -33,11 +34,14 @@ export const DEFAULTS = {
   trendingDuration: '1h',
   maxCallsPerMinute: 25,
   startingBankrollUsd: 1000,
-  universe: { minLiquidityUsd: 5000 },
+  // Matches the live trading rules: only coins you could really trade.
+  universe: { minLiquidityUsd: 100_000, minSellsM5: 1 },
   trade: {
     sizeUsd: 50,
     feeRate: 0.003,
     slippageRate: 0.015,
+    maxChasePct: 0.05,
+    collapseLiquidityRatio: 0.2,
     stopLossPct: 0.2,
     takeProfitPct: 0.4,
     timeLimitMin: 60,

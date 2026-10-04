@@ -55,6 +55,8 @@ export function summarize(trades) {
 /**
  * @typedef {Object} BookResult
  * @property {number} open
+ * @property {number} pending
+ * @property {number} cancelled
  * @property {number} cashUsd
  * @property {number} equityUsd         Cash plus open positions marked to their latest price, after exit costs.
  * @property {number} unrealizedPnlUsd
@@ -72,19 +74,20 @@ export function summarize(trades) {
 /**
  * @param {PaperTrade[]} mine
  * @param {number} startingBankroll
- * @param {(poolAddress: string) => number|null} latestPrice
+ * @param {(poolAddress: string) => {price: number, liquidityUsd: number|null}|null} latestPrice
  * @returns {BookResult}
  */
 function bookResult(mine, startingBankroll, latestPrice) {
   const closed = mine.filter((t) => t.status === 'closed');
   const open = mine.filter((t) => t.status === 'open');
+  const pending = mine.filter((t) => t.status === 'pending');
   let unrealized = 0;
   for (const t of open) {
-    const p = latestPrice(t.poolAddress);
-    if (p !== null) unrealized += liquidationValue(t, p).proceedsUsd - t.sizeUsd;
+    const m = latestPrice(t.poolAddress);
+    if (m !== null) unrealized += liquidationValue(t, m.price, m.liquidityUsd).proceedsUsd - t.sizeUsd;
   }
   const realized = closed.reduce((a, t) => a + (t.pnlUsd ?? 0), 0);
-  const locked = open.reduce((a, t) => a + t.sizeUsd, 0);
+  const locked = [...open, ...pending].reduce((a, t) => a + t.sizeUsd, 0);
   /** @type {Record<string, number>} */
   const exitReasons = {};
   for (const t of closed) exitReasons[t.exitReason ?? 'unknown'] = (exitReasons[t.exitReason ?? 'unknown'] ?? 0) + 1;
@@ -94,6 +97,8 @@ function bookResult(mine, startingBankroll, latestPrice) {
     .map((t) => ({ t: t.closedAt ?? 0, equity: (eq += t.pnlUsd ?? 0) }));
   return {
     open: open.length,
+    pending: pending.length,
+    cancelled: mine.filter((t) => t.status === 'cancelled').length,
     cashUsd: startingBankroll + realized - locked,
     equityUsd: startingBankroll + realized + unrealized,
     unrealizedPnlUsd: unrealized,
@@ -108,7 +113,7 @@ function bookResult(mine, startingBankroll, latestPrice) {
  * @param {PaperTrade[]} a.trades          All trades.
  * @param {string[]} a.strategies          Signal ids, in display order (random is added last).
  * @param {number} a.startingBankroll      Per book.
- * @param {(poolAddress: string) => number|null} a.latestPrice
+ * @param {(poolAddress: string) => {price: number, liquidityUsd: number|null}|null} a.latestPrice
  * @returns {StrategyResult[]}
  */
 export function strategyResults({ trades, strategies, startingBankroll, latestPrice }) {
