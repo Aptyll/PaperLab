@@ -10,11 +10,14 @@
 //   #/coin/<pool>  One coin: price chart with every trade marked
 //   #/guide        How it all works, and past runs
 //   #/notes        The research notebook (files in notes/), newest first
+//   #/legal        For a lawyer: what Paper Lab is, and the crypto rules around it (legal.js)
 //   #/get          Public demo only: how to download and run Paper Lab
 //
 // A strategy (a "bot", Bot 1, Bot 2...) is a name plus one rule and its exits.
 // The home screen, its chart and the portfolio number cover active (not
 // retired) strategies.
+
+import { legalPage } from './legal.js';
 
 /** @type {any} */
 const LWC = /** @type {any} */ (window).LightweightCharts;
@@ -244,7 +247,7 @@ function renderTopbar() {
   document.querySelector('.topbar')?.classList.toggle('pinned', s.live && !(healthy && !failed));
   renderMenu();
   const r = route();
-  const here = r.page === 'coins' || r.page === 'coin' ? 'coins' : r.page === 'guide' || r.page === 'notes' ? r.page : 'home';
+  const here = r.page === 'coins' || r.page === 'coin' ? 'coins' : r.page === 'guide' || r.page === 'notes' || r.page === 'legal' ? r.page : 'home';
   for (const a of document.querySelectorAll('.nav a')) a.classList.toggle('active', a.getAttribute('data-nav') === here);
 }
 
@@ -1741,6 +1744,7 @@ function route() {
   if (page === 'coins') return { page: 'coins', arg: '' };
   if (page === 'guide') return { page: 'guide', arg: arg ?? '' };
   if (page === 'notes') return { page: 'notes', arg: arg ?? '' };
+  if (page === 'legal') return { page: 'legal', arg: arg ?? '' };
   if (page === 'get' && DEMO) return { page: 'get', arg: '' };
   return { page: 'home', arg: '' };
 }
@@ -1764,6 +1768,7 @@ async function render() {
     else if (r.page === 'coin') await coinPage(view, r.arg);
     else if (r.page === 'guide') guidePage(view);
     else if (r.page === 'notes') await notesPage(view);
+    else if (r.page === 'legal') legalPage(view);
     else if (r.page === 'get') getPage(view);
     else await scoreboardPage(view);
     if (key === lastRoute) {
@@ -1777,7 +1782,7 @@ async function render() {
   } finally {
     view.scrollTop = keepScroll;
     // A link like #/guide/sessions lands on that section.
-    if ((r.page === 'guide' || r.page === 'notes') && r.arg && key !== lastRoute) document.getElementById(r.arg)?.scrollIntoView();
+    if ((r.page === 'guide' || r.page === 'notes' || r.page === 'legal') && r.arg && key !== lastRoute) document.getElementById(r.arg)?.scrollIntoView();
     lastRoute = key;
     rendering = false;
   }
