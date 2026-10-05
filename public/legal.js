@@ -46,7 +46,7 @@ const SECTIONS = [
         <tr><td>What it shows</td><td>Each bot's pretend results against its own random picker, and a "Hot now" list: coins a rule just fired on, with how often that rule's past pretend trades hit their target and how many trades that is based on. The same for everyone who runs it; nothing is tailored to a person.</td></tr>
         <tr><td>Public demo</td><td>A static website on GitHub Pages that replays one recorded session, read-only. It has no live data and no server of its own. It links to free downloads of the app.</td></tr>
       </tbody></table>
-      <p>These facts come from the app's source code, which is public on ${src('GitHub', 'https://github.com/Aptyll/Tool')}.</p>`,
+      <p>These facts come from the app's source code, which is public on ${src('GitHub', 'https://github.com/Aptyll/PaperLab')}.</p>`,
   },
   {
     id: 'short-version',
